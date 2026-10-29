@@ -1143,6 +1143,21 @@ func buildCodexUsageExtraUpdates(snapshot *OpenAICodexUsageSnapshot, fallbackNow
 	return updates
 }
 
+// codexSnapshotNearLimit reports whether a snapshot about to be persisted
+// shows 5h or 7d usage in the range where scheduling auto-pause thresholds
+// operate. Such snapshots bypass the persist throttle so the scheduler sees
+// the crossing as soon as the first request past the line completes, instead
+// of up to one throttle interval (30s) later — by which time a fast burn can
+// already have exhausted the window.
+func codexSnapshotNearLimit(updates map[string]any) bool {
+	for _, key := range []string{"codex_5h_used_percent", "codex_7d_used_percent"} {
+		if v, ok := updates[key].(float64); ok && v >= openAICodexSnapshotNearLimitPercent {
+			return true
+		}
+	}
+	return false
+}
+
 // updateCodexUsageSnapshot saves the Codex usage snapshot to account's Extra field
 // updateCodexUsageSnapshot 把 /responses 的 x-codex-* 全局头快照写入账号 codex_* Extra。
 // ⚠️ 调用方必须排除 spark 影子账号(account.IsShadow()):影子的 codex_* 仅由 QueryUsage
@@ -1161,7 +1176,7 @@ func (s *OpenAIGatewayService) updateCodexUsageSnapshot(ctx context.Context, acc
 	if len(updates) == 0 {
 		return
 	}
-	if !s.getCodexSnapshotThrottle().Allow(accountID, now) {
+	if !codexSnapshotNearLimit(updates) && !s.getCodexSnapshotThrottle().Allow(accountID, now) {
 		return
 	}
 
