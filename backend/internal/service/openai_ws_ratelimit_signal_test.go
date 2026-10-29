@@ -461,8 +461,10 @@ func TestOpenAIGatewayService_UpdateCodexUsageSnapshot_ThrottlesExtraWrites(t *t
 		accountRepo:           repo,
 		codexSnapshotThrottle: newAccountWriteThrottle(time.Hour),
 	}
+	// Usage stays below the near-limit bypass line: f1d3c4ffc only skips the
+	// throttle at >= 90%, so the plain throttle has to be exercised below it.
 	snapshot := &OpenAICodexUsageSnapshot{
-		PrimaryUsedPercent:         ptrFloat64WS(94),
+		PrimaryUsedPercent:         ptrFloat64WS(40),
 		PrimaryResetAfterSeconds:   ptrIntWS(3600),
 		PrimaryWindowMinutes:       ptrIntWS(10080),
 		SecondaryUsedPercent:       ptrFloat64WS(22),
@@ -483,6 +485,39 @@ func TestOpenAIGatewayService_UpdateCodexUsageSnapshot_ThrottlesExtraWrites(t *t
 	case updates := <-repo.updateExtraCh:
 		t.Fatalf("unexpected second codex snapshot write: %v", updates)
 	case <-time.After(200 * time.Millisecond):
+	}
+}
+
+// TestOpenAIGatewayService_UpdateCodexUsageSnapshot_BypassesThrottleNearLimit
+// guards the behaviour f1d3c4ffc introduced: a snapshot at or above the
+// near-limit line must reach the repository on every write, even inside the
+// throttle window, so the scheduler observes the crossing immediately.
+func TestOpenAIGatewayService_UpdateCodexUsageSnapshot_BypassesThrottleNearLimit(t *testing.T) {
+	repo := &openAICodexSnapshotAsyncRepo{
+		updateExtraCh: make(chan map[string]any, 4),
+	}
+	svc := &OpenAIGatewayService{
+		accountRepo:           repo,
+		codexSnapshotThrottle: newAccountWriteThrottle(time.Hour),
+	}
+	snapshot := &OpenAICodexUsageSnapshot{
+		PrimaryUsedPercent:         ptrFloat64WS(95),
+		PrimaryResetAfterSeconds:   ptrIntWS(3600),
+		PrimaryWindowMinutes:       ptrIntWS(10080),
+		SecondaryUsedPercent:       ptrFloat64WS(22),
+		SecondaryResetAfterSeconds: ptrIntWS(1200),
+		SecondaryWindowMinutes:     ptrIntWS(300),
+	}
+
+	svc.updateCodexUsageSnapshot(context.Background(), 778, snapshot)
+	svc.updateCodexUsageSnapshot(context.Background(), 778, snapshot)
+
+	for i := 0; i < 2; i++ {
+		select {
+		case <-repo.updateExtraCh:
+		case <-time.After(2 * time.Second):
+			t.Fatalf("等待第 %d 次 near-limit 快照落库超时", i+1)
+		}
 	}
 }
 
