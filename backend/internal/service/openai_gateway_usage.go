@@ -1149,13 +1149,38 @@ func buildCodexUsageExtraUpdates(snapshot *OpenAICodexUsageSnapshot, fallbackNow
 // the crossing as soon as the first request past the line completes, instead
 // of up to one throttle interval (30s) later — by which time a fast burn can
 // already have exhausted the window.
-func codexSnapshotNearLimit(updates map[string]any) bool {
+func codexSnapshotNearLimit(updates map[string]any, bypassPercent float64) bool {
+	if bypassPercent <= 0 {
+		bypassPercent = openAICodexSnapshotNearLimitPercent
+	}
 	for _, key := range []string{"codex_5h_used_percent", "codex_7d_used_percent"} {
-		if v, ok := updates[key].(float64); ok && v >= openAICodexSnapshotNearLimitPercent {
+		// resolveAccountExtraNumber tolerates every numeric shape the JSON round
+		// trip may produce; a bare float64 assertion would silently disable the
+		// bypass if the field ever changes type.
+		if v, ok := resolveAccountExtraNumber(updates, key); ok && v >= bypassPercent {
 			return true
 		}
 	}
 	return false
+}
+
+// codexSnapshotBypassPercent returns the utilization at which snapshot writes
+// stop being throttled. It tracks the configured OpenAI scheduling threshold so
+// an admin who pauses accounts below the built-in 90% still has the crossing
+// detected on the first request past the line, while 100 (auto-pause disabled)
+// keeps the historical 90% default.
+func (s *OpenAIGatewayService) codexSnapshotBypassPercent(ctx context.Context) float64 {
+	if s == nil || s.settingService == nil {
+		return openAICodexSnapshotNearLimitPercent
+	}
+	threshold, ok := s.settingService.GetAccountSchedulingThresholds(ctx)[PlatformOpenAI]
+	if !ok || threshold <= 0 || threshold >= 100 {
+		return openAICodexSnapshotNearLimitPercent
+	}
+	if candidate := float64(threshold); candidate < openAICodexSnapshotNearLimitPercent {
+		return candidate
+	}
+	return openAICodexSnapshotNearLimitPercent
 }
 
 // updateCodexUsageSnapshot saves the Codex usage snapshot to account's Extra field
@@ -1176,7 +1201,7 @@ func (s *OpenAIGatewayService) updateCodexUsageSnapshot(ctx context.Context, acc
 	if len(updates) == 0 {
 		return
 	}
-	if !codexSnapshotNearLimit(updates) && !s.getCodexSnapshotThrottle().Allow(accountID, now) {
+	if !codexSnapshotNearLimit(updates, s.codexSnapshotBypassPercent(ctx)) && !s.getCodexSnapshotThrottle().Allow(accountID, now) {
 		return
 	}
 

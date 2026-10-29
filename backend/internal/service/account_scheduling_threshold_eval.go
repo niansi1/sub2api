@@ -2,6 +2,7 @@ package service
 
 import (
 	"encoding/json"
+	"fmt"
 	"math"
 	"strconv"
 	"strings"
@@ -280,10 +281,57 @@ func openAIThresholdCandidate(extra map[string]any, window string, now time.Time
 			until = &resetAt
 		}
 	}
+	if until == nil {
+		// 上游可能只回 used-percent 而不回任何 reset 头。此前 until 为 nil 会让
+		// candidateMatchesThreshold 直接判否，全局阈值于是彻底失效——设置了也不生效。
+		// 用「快照写入时间 + 窗口长度」作为重置时间的上界兜底：窗口必然在快照采样
+		// 之后才结束，所以这个上界不会提前放行，只会比真实重置时间更保守。
+		until = openAIThresholdFallbackUntil(extra, window, now)
+	}
+	if until == nil {
+		return nil
+	}
 	return &accountSchedulingThresholdCandidate{
 		window:      window,
 		usedPercent: schedulingPercentValue(usedPercent),
 		until:       until,
+	}
+}
+
+// openAIThresholdFallbackUntil returns a conservative upper bound for the Codex
+// usage window reset when the upstream response carried no reset information.
+// The window cannot end earlier than the snapshot was sampled, so anchoring on
+// codex_usage_updated_at never releases the account before its window is over.
+func openAIThresholdFallbackUntil(extra map[string]any, window string, now time.Time) *time.Time {
+	windowLength, ok := openAIQuotaWindowLength(window)
+	if !ok {
+		return nil
+	}
+	updatedRaw, exists := extra["codex_usage_updated_at"]
+	if !exists || updatedRaw == nil {
+		return nil
+	}
+	updatedAt, err := parseTime(fmt.Sprint(updatedRaw))
+	if err != nil {
+		return nil
+	}
+	until := updatedAt.Add(windowLength)
+	if !until.After(now) {
+		// 兜底上界已过期：窗口大概率已滚动，交给下一次真实响应头重新采样。
+		return nil
+	}
+	return &until
+}
+
+// openAIQuotaWindowLength returns the nominal length of a Codex usage window.
+func openAIQuotaWindowLength(window string) (time.Duration, bool) {
+	switch window {
+	case "5h":
+		return 5 * time.Hour, true
+	case "7d":
+		return 7 * 24 * time.Hour, true
+	default:
+		return 0, false
 	}
 }
 
