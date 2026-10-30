@@ -303,10 +303,14 @@ type OpenAIForwardResult struct {
 	// upstream Responses WebSocket turn. Empty preserves legacy/non-WS success.
 	UpstreamTerminalEvent string
 	ResponseHeaders       http.Header
-	Duration              time.Duration
-	FirstTokenMs          *int
-	ClientDisconnect      bool
-	ImageCount            int
+	// ResponseHeadersObservedAt 是上游产生 ResponseHeaders 的时刻。零值表示"当前"。
+	// WebSocket 路径必须填握手时刻：池化连接每轮都会重放同一份握手响应头，
+	// 若按 time.Now() 落库，陈旧配额会被当成新观测写入，导致阈值判定使用过期数据。
+	ResponseHeadersObservedAt time.Time
+	Duration                  time.Duration
+	FirstTokenMs              *int
+	ClientDisconnect          bool
+	ImageCount                int
 	// ImageEndpoint 标记请求来自专用图片端点；分组 image_count_billing 开关
 	// 只对这类请求生效，混合 Responses/Chat/WS 请求仍按 token 计费。
 	ImageEndpoint      bool

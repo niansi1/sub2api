@@ -180,6 +180,17 @@ func (l *openAIWSConnLease) HandshakeHeaders() http.Header {
 	return cloneHeader(l.conn.handshakeHeaders)
 }
 
+// HandshakeObservedAt 返回产生 HandshakeHeaders() 的那次上游握手完成的时刻。
+// 池化连接会被复用最多 openAIWSConnMaxAge，因此这些响应头描述的账号状态可能
+// 已经过去很久；把响应头当作用量快照落库时必须以该时刻为准，否则陈旧的握手头
+// 会被重新盖上当前时间，既绕过 2h 陈旧熔断，也骗过按观测时间排序的单调写入。
+func (l *openAIWSConnLease) HandshakeObservedAt() time.Time {
+	if l == nil || l.conn == nil {
+		return time.Time{}
+	}
+	return l.conn.createdAt()
+}
+
 func (l *openAIWSConnLease) IsPrewarmed() bool {
 	if l == nil || l.conn == nil {
 		return false

@@ -3151,8 +3151,10 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 					zap.String("billing_model", result.BillingModel),
 				)
 				// 排除 spark 影子:其 codex_* 仅由 QueryUsage(/wham/usage bengalfox)更新(外审第7轮 P1)。
+				// 必须带握手时刻：WS 池化连接每轮重放同一份握手响应头，按 time.Now() 落库
+				// 会让陈旧配额被记成新观测，阈值判定随即使用过期数据（用户反馈的"设了阈值仍突破"）。
 				if account.Type == service.AccountTypeOAuth && !account.IsShadow() {
-					h.gatewayService.UpdateCodexUsageSnapshotFromHeaders(ctx, account.ID, result.ResponseHeaders)
+					h.gatewayService.UpdateCodexUsageSnapshotFromHeadersAt(ctx, account.ID, result.ResponseHeaders, result.ResponseHeadersObservedAt)
 				}
 				scheduleModel := turnUpstreamModel
 				if scheduleModel == "" {

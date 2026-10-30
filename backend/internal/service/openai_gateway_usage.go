@@ -1222,12 +1222,24 @@ func (s *OpenAIGatewayService) updateCodexUsageSnapshot(ctx context.Context, acc
 }
 
 func (s *OpenAIGatewayService) UpdateCodexUsageSnapshotFromHeaders(ctx context.Context, accountID int64, headers http.Header) {
+	s.UpdateCodexUsageSnapshotFromHeadersAt(ctx, accountID, headers, time.Time{})
+}
+
+// UpdateCodexUsageSnapshotFromHeadersAt 与 UpdateCodexUsageSnapshotFromHeaders 相同，
+// 但允许调用方声明响应头的真实观测时刻。observedAt 为零值时按"当前"处理。
+// WebSocket 路径必须传入握手时刻，因为池化连接会复用同一份握手响应头。
+func (s *OpenAIGatewayService) UpdateCodexUsageSnapshotFromHeadersAt(ctx context.Context, accountID int64, headers http.Header, observedAt time.Time) {
 	if accountID <= 0 || headers == nil {
 		return
 	}
-	if snapshot := ParseCodexRateLimitHeaders(headers); snapshot != nil {
-		s.updateCodexUsageSnapshot(ctx, accountID, snapshot)
+	snapshot := ParseCodexRateLimitHeaders(headers)
+	if snapshot == nil {
+		return
 	}
+	if !observedAt.IsZero() {
+		snapshot.UpdatedAt = observedAt.Format(time.RFC3339Nano)
+	}
+	s.updateCodexUsageSnapshot(ctx, accountID, snapshot)
 }
 
 func cloneImageSizeBreakdown(input map[string]int) map[string]int {
