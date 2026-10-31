@@ -22,6 +22,8 @@ var (
 	ErrInsufficientBalance = infraerrors.BadRequest("INSUFFICIENT_BALANCE", "insufficient balance")
 	ErrRedeemRateLimited   = infraerrors.TooManyRequests("REDEEM_RATE_LIMITED", "too many failed attempts, please try again later")
 	ErrRedeemCodeLocked    = infraerrors.Conflict("REDEEM_CODE_LOCKED", "redeem code is being processed, please try again")
+	// ErrRedeemDisabled 在兑换码功能被管理员关闭时由路由门控返回。
+	ErrRedeemDisabled = infraerrors.Forbidden("REDEEM_DISABLED", "redeem codes are disabled")
 )
 
 const (

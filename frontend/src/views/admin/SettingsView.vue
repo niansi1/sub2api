@@ -1527,6 +1527,21 @@
                 <Toggle v-model="form.promo_code_enabled" />
               </div>
 
+              <!-- Redeem Code -->
+              <div
+                class="flex items-center justify-between border-t border-gray-100 pt-4 dark:border-dark-700"
+              >
+                <div>
+                  <label class="font-medium text-gray-900 dark:text-white">{{
+                    t("admin.settings.registration.redeemCode")
+                  }}</label>
+                  <p class="text-sm text-gray-500 dark:text-gray-400">
+                    {{ t("admin.settings.registration.redeemCodeHint") }}
+                  </p>
+                </div>
+                <Toggle v-model="form.redeem_enabled" />
+              </div>
+
               <!-- Invitation Code -->
               <div
                 class="flex items-center justify-between border-t border-gray-100 pt-4 dark:border-dark-700"
@@ -9740,6 +9755,7 @@ const form = reactive<SettingsForm>({
   registration_email_suffix_whitelist: [],
   registration_email_domain_quota_enabled: false,
   promo_code_enabled: true,
+  redeem_enabled: true,
   invitation_code_enabled: false,
   password_reset_enabled: false,
   totp_enabled: false,
@@ -11446,6 +11462,7 @@ async function saveSettings() {
       registration_email_domain_quota_enabled:
         form.registration_email_domain_quota_enabled,
       promo_code_enabled: form.promo_code_enabled,
+      redeem_enabled: form.redeem_enabled,
       invitation_code_enabled: form.invitation_code_enabled,
       password_reset_enabled: form.password_reset_enabled,
       totp_enabled: form.totp_enabled,

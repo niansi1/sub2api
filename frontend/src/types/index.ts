@@ -215,6 +215,8 @@ export interface PublicSettings {
   registration_email_suffix_whitelist: string[]
   registration_email_domain_quota_enabled?: boolean
   promo_code_enabled: boolean
+  /** 兑换码（Redeem Code）功能开关，opt-out：未加载即可见，仅显式 false 隐藏。默认 true。 */
+  redeem_enabled: boolean
   password_reset_enabled: boolean
   invitation_code_enabled: boolean
   login_agreement_enabled?: boolean

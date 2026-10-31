@@ -31,8 +31,9 @@ func RegisterUserRoutes(
 			user.GET("/profile", h.User.GetProfile)
 			user.PUT("/password", h.User.ChangePassword)
 			user.PUT("", h.User.UpdateProfile)
-			user.GET("/aff", h.User.GetAffiliate)
-			user.POST("/aff/transfer", h.User.TransferAffiliateQuota)
+			// 邀请返利：总开关关闭后 API 直接 403，不再依赖前端隐藏入口。
+			user.GET("/aff", affiliateFeatureGuard(settingService), h.User.GetAffiliate)
+			user.POST("/aff/transfer", affiliateFeatureGuard(settingService), h.User.TransferAffiliateQuota)
 			user.POST("/account-bindings/email/send-code", h.User.SendEmailBindingCode)
 			user.POST("/account-bindings/email", h.User.BindEmailIdentity)
 			user.DELETE("/account-bindings/:provider", h.User.UnbindIdentity)
@@ -119,15 +120,17 @@ func RegisterUserRoutes(
 			announcements.POST("/:id/read", h.Announcement.MarkRead)
 		}
 
-		// 卡密兑换
+		// 卡密兑换（总开关关闭后整组 403）
 		redeem := authenticated.Group("/redeem")
+		redeem.Use(redeemFeatureGuard(settingService))
 		{
 			redeem.POST("", h.Redeem.Redeem)
 			redeem.GET("/history", h.Redeem.GetHistory)
 		}
 
-		// 用户订阅
+		// 用户订阅（订阅功能关闭后整组 403；管理端分配的历史订阅仍可计费）
 		subscriptions := authenticated.Group("/subscriptions")
+		subscriptions.Use(subscriptionFeatureGuard(settingService))
 		{
 			subscriptions.GET("", h.Subscription.List)
 			subscriptions.GET("/active", h.Subscription.GetActive)

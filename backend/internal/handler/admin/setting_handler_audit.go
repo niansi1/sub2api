@@ -47,6 +47,10 @@ func diffSettings(before *service.SystemSettings, after *service.SystemSettings,
 	if before.PromoCodeEnabled != after.PromoCodeEnabled {
 		changed = append(changed, "promo_code_enabled")
 	}
+	// after 已按 omitted 语义回退到现值，因此省略该字段不会误报审计。
+	if before.RedeemEnabled != after.RedeemEnabled {
+		changed = append(changed, "redeem_enabled")
+	}
 	if before.InvitationCodeEnabled != after.InvitationCodeEnabled {
 		changed = append(changed, "invitation_code_enabled")
 	}

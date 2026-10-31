@@ -165,6 +165,9 @@ export default {
           '开启后，白名单非空时，其他可注册主域名各限注册一个账户；关闭时非白名单域名直接拒绝注册。白名单为空时本开关无效果',
         promoCode: '优惠码',
         promoCodeHint: '允许用户在注册时使用优惠码',
+        redeemCode: '兑换码',
+        redeemCodeHint:
+          '控制侧栏「兑换」入口与兑换码管理页。关闭后隐藏兑换页及管理端兑换码管理入口，并拦截其直达访问。',
         invitationCode: '邀请码注册',
         invitationCodeHint: '开启后，用户注册时需要填写有效的邀请码',
         passwordReset: '忘记密码',

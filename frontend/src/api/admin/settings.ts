@@ -409,6 +409,8 @@ export interface SystemSettings {
   registration_email_suffix_whitelist: string[];
   registration_email_domain_quota_enabled: boolean;
   promo_code_enabled: boolean;
+  // 兑换码（Redeem Code）功能开关，opt-out：默认 true
+  redeem_enabled: boolean;
   password_reset_enabled: boolean;
   frontend_url: string;
   invitation_code_enabled: boolean;
@@ -767,6 +769,7 @@ export interface UpdateSettingsRequest {
   registration_email_suffix_whitelist?: string[];
   registration_email_domain_quota_enabled?: boolean;
   promo_code_enabled?: boolean;
+  redeem_enabled?: boolean;
   password_reset_enabled?: boolean;
   frontend_url?: string;
   invitation_code_enabled?: boolean;

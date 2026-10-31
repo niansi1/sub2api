@@ -63,6 +63,30 @@ func (s *SettingService) IsPromoCodeEnabled(ctx context.Context) bool {
 	return value != "false"
 }
 
+// IsRedeemEnabled 检查是否启用兑换码（卡密）功能。
+// opt-out 语义：设置缺失或查询出错时按开启处理，与前端默认可见保持一致。
+func (s *SettingService) IsRedeemEnabled(ctx context.Context) bool {
+	value, err := s.settingRepo.GetValue(ctx, SettingKeyRedeemEnabled)
+	if err != nil {
+		return true // 默认启用
+	}
+	return !isFalseSettingValue(value)
+}
+
+// IsSubscriptionEnabled 检查用户侧订阅功能开关是否开启。
+// opt-out 语义：与 GetPublicSettings 中的 subscription_enabled 判定保持完全一致。
+func (s *SettingService) IsSubscriptionEnabled(ctx context.Context) bool {
+	value, err := s.settingRepo.GetValue(ctx, SettingKeySubscriptionEnabled)
+	if err != nil {
+		return true // 默认启用
+	}
+	return !isFalseSettingValue(value)
+}
+
+// ErrPromoCodeFeatureDisabled 在优惠码功能被管理员关闭时由路由门控返回。
+// 注意：与 promo_service.go 里的 ErrPromoCodeDisabled 区分——后者表示单个优惠码被禁用。
+var ErrPromoCodeFeatureDisabled = infraerrors.Forbidden("PROMO_CODE_DISABLED", "promo codes are disabled")
+
 // IsInvitationCodeEnabled 检查是否启用邀请码注册功能
 func (s *SettingService) IsInvitationCodeEnabled(ctx context.Context) bool {
 	value, err := s.settingRepo.GetValue(ctx, SettingKeyInvitationCodeEnabled)

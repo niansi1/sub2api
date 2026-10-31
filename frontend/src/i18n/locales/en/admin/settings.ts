@@ -165,6 +165,9 @@ export default {
           'When enabled and the allowlist is not empty, every other registrable domain can register one account. When disabled, non-allowlist domains are rejected. Has no effect while the allowlist is empty',
         promoCode: 'Promo Code',
         promoCodeHint: 'Allow users to use promo codes during registration',
+        redeemCode: 'Redeem Code',
+        redeemCodeHint:
+          'Show the redeem-code entry in the sidebar. When off, the redeem page and admin redeem-code management are hidden and their routes are guarded.',
         invitationCode: 'Invitation Code Registration',
         invitationCodeHint: 'When enabled, users must enter a valid invitation code to register',
         passwordReset: 'Password Reset',

@@ -134,6 +134,16 @@ export const FeatureFlags = {
     mode: 'opt-in',
     label: 'Affiliate',
   }),
+  redeem: defineFlag({
+    key: 'redeem_enabled',
+    mode: 'opt-out',
+    label: 'Redeem Codes',
+  }),
+  promoCodes: defineFlag({
+    key: 'promo_code_enabled',
+    mode: 'opt-out',
+    label: 'Promo Codes',
+  }),
 } as const
 
 export type RegisteredFeatureFlag = keyof typeof FeatureFlags
