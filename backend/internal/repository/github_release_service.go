@@ -201,8 +201,17 @@ const (
 	// black-holed TCP connection would block until the download client timeout,
 	// stalling the whole transfer even though every other segment finished.
 	downloadSegmentAttemptTimeout = 2 * time.Minute
-	// downloadRangeProbeTimeout bounds the Range capability probe.
-	downloadRangeProbeTimeout = 30 * time.Second
+	// downloadRangeProbeTimeout bounds a single Range capability probe.
+	downloadRangeProbeTimeout = 15 * time.Second
+	// downloadRangeProbeAttempts bounds how often the probe is retried. The
+	// link to GitHub is intermittent on some hosts (roughly every other HTTPS
+	// request fails outright), and a failed probe would otherwise drop the
+	// whole transfer onto the far slower single-stream path.
+	downloadRangeProbeAttempts = 10
+	// downloadProbeRetryDelay is the pause between probe attempts.
+	downloadProbeRetryDelay = 2 * time.Second
+	// downloadSegmentBackoffMax caps the per-segment retry backoff.
+	downloadSegmentBackoffMax = 20 * time.Second
 )
 
 // downloadRangeInfo describes what the origin told us about the asset.
@@ -228,26 +237,59 @@ func (c *githubReleaseClient) DownloadFile(ctx context.Context, url, dest string
 }
 
 // probeDownloadRange requests a single byte to learn whether Range requests are
-// supported and how large the asset is.
+// supported and how large the asset is. Transport failures are retried because
+// the upstream link is intermittent on some hosts; only an explicit HTTP answer
+// is treated as authoritative.
 func (c *githubReleaseClient) probeDownloadRange(ctx context.Context, rawURL string) downloadRangeInfo {
+	for attempt := 0; attempt < downloadRangeProbeAttempts; attempt++ {
+		if attempt > 0 {
+			select {
+			case <-ctx.Done():
+				return downloadRangeInfo{}
+			case <-time.After(downloadProbeRetryDelay):
+			}
+		}
+		info, ok := c.probeDownloadRangeOnce(ctx, rawURL)
+		if ok {
+			return info
+		}
+		if ctx.Err() != nil {
+			return downloadRangeInfo{}
+		}
+	}
+	return downloadRangeInfo{}
+}
+
+// probeDownloadRangeOnce performs one probe. The second result reports whether
+// the outcome is conclusive (the origin answered), so the caller can stop
+// retrying on a definite "no Range support" response.
+func (c *githubReleaseClient) probeDownloadRangeOnce(ctx context.Context, rawURL string) (downloadRangeInfo, bool) {
 	probeCtx, cancel := context.WithTimeout(ctx, downloadRangeProbeTimeout)
 	defer cancel()
 
 	req, err := http.NewRequestWithContext(probeCtx, http.MethodGet, rawURL, nil)
 	if err != nil {
-		return downloadRangeInfo{}
+		// A malformed URL cannot heal on retry.
+		return downloadRangeInfo{}, true
 	}
 	req.Header.Set("Range", "bytes=0-0")
 
 	resp, err := c.downloadHTTPClient.Do(req)
 	if err != nil {
-		return downloadRangeInfo{}
+		return downloadRangeInfo{}, false
 	}
 	defer func() { _ = resp.Body.Close() }()
 	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1))
 
+	// Definitive answers that retrying cannot change: the origin served the
+	// whole file (no Range support, use the single-stream path) or rejected the
+	// request outright (404/403/...). Fall back instead of retrying.
+	if resp.StatusCode == http.StatusOK || (resp.StatusCode >= 400 && resp.StatusCode < 500 && resp.StatusCode != http.StatusTooManyRequests) {
+		return downloadRangeInfo{}, true
+	}
+	// Everything else (5xx, 429, truncated body) is transient: retry.
 	if resp.StatusCode != http.StatusPartialContent {
-		return downloadRangeInfo{}
+		return downloadRangeInfo{}, false
 	}
 
 	var total int64
@@ -262,9 +304,9 @@ func (c *githubReleaseClient) probeDownloadRange(ctx context.Context, rawURL str
 		total = resp.ContentLength
 	}
 	if total <= 0 {
-		return downloadRangeInfo{}
+		return downloadRangeInfo{}, false
 	}
-	return downloadRangeInfo{size: total, ranged: true}
+	return downloadRangeInfo{size: total, ranged: true}, true
 }
 
 // downloadSegmented fetches the asset as contiguous byte ranges in parallel.
@@ -334,10 +376,16 @@ func (c *githubReleaseClient) downloadSegment(ctx context.Context, rawURL string
 	var lastErr error
 	for attempt := 0; attempt < downloadSegmentAttempts && offset <= end; attempt++ {
 		if attempt > 0 {
+			// Exponential backoff so a segment can outlast a short outage of
+			// the link instead of burning its attempts in a few seconds.
+			delay := time.Second << uint(attempt-1)
+			if delay > downloadSegmentBackoffMax {
+				delay = downloadSegmentBackoffMax
+			}
 			select {
 			case <-ctx.Done():
 				return ctx.Err()
-			case <-time.After(time.Duration(attempt) * 500 * time.Millisecond):
+			case <-time.After(delay):
 			}
 		}
 		written, err := c.downloadSegmentOnce(ctx, rawURL, out, offset, end)

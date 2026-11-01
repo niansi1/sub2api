@@ -3,12 +3,14 @@ package repository
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -155,6 +157,56 @@ func (s *GitHubReleaseServiceSuite) TestDownloadFile_SegmentedRange() {
 	s.Require().NoError(readErr)
 	s.Require().Equal(len(payload), len(got))
 	s.Require().True(bytes.Equal(payload, got), "segmented download must reproduce the source bytes")
+}
+
+// TestDownloadFile_SegmentedResumesAfterDrop verifies that a segment which loses
+// its connection mid-transfer resumes from the last received byte instead of
+// restarting, which is what makes the parallel path usable on flaky links.
+func (s *GitHubReleaseServiceSuite) TestDownloadFile_SegmentedResumesAfterDrop() {
+	payload := bytes.Repeat([]byte("0123456789abcdef"), 40000) // 640 KB
+	var mu sync.Mutex
+	attempts := map[string]int{}
+
+	s.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		httpRange := r.Header.Get("Range")
+		mu.Lock()
+		attempts[httpRange]++
+		seen := attempts[httpRange]
+		mu.Unlock()
+
+		// Drop the very first request for every range after delivering only a
+		// prefix, so each segment must resume to make progress.
+		if seen == 1 && httpRange != "" {
+			var start, end int64
+			if _, err := fmt.Sscanf(httpRange, "bytes=%d-%d", &start, &end); err == nil {
+				w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", start, end, len(payload)))
+				w.WriteHeader(http.StatusPartialContent)
+				if fl, ok := w.(http.Flusher); ok {
+					fl.Flush()
+				}
+				_, _ = w.Write(payload[start:min64(start+1024, end+1)])
+				return
+			}
+		}
+		http.ServeContent(w, r, "asset.tar.gz", time.Time{}, bytes.NewReader(payload))
+	}))
+
+	s.client = newTestGitHubReleaseClient()
+
+	dest := filepath.Join(s.tempDir, "resumed.bin")
+	err := s.client.DownloadFile(context.Background(), s.srv.URL+"/asset.tar.gz", dest, int64(len(payload))+1024)
+	s.Require().NoError(err)
+
+	got, readErr := os.ReadFile(dest)
+	s.Require().NoError(readErr)
+	s.Require().True(bytes.Equal(payload, got), "resumed download must reproduce the source bytes")
+}
+
+func min64(a, b int64) int64 {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 // TestDownloadFile_SegmentedHonoursMaxSize ensures the size guard also applies
