@@ -30,7 +30,10 @@ var (
 const (
 	updateCacheKey = "update_check_cache"
 	updateCacheTTL = 1200 // 20 minutes
-	githubRepo     = "Wei-Shaw/sub2api"
+	// Fork override: self-update must follow this fork, not the upstream
+	// repository, otherwise the panel would download the stock upstream build
+	// and silently drop every customization carried on the custom branch.
+	githubRepo = "niansi1/sub2api"
 
 	// Security: allowed download domains for updates
 	allowedDownloadHost = "github.com"
