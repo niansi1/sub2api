@@ -195,19 +195,21 @@ const (
 	// what keeps a ~40 MB archive inside the update timeout budget.
 	downloadSegmentParallelism = 24
 	// downloadSegmentAttempts bounds how often a stalled segment is resumed.
-	// Every attempt keeps the bytes already written, so retries are cheap.
-	downloadSegmentAttempts = 8
+	// Every attempt keeps the bytes already written, so retries are cheap and a
+	// generous count lets a segment sit out a multi-minute link outage.
+	downloadSegmentAttempts = 20
 	// downloadSegmentAttemptTimeout caps a single segment attempt. Without it a
 	// black-holed TCP connection would block until the download client timeout,
 	// stalling the whole transfer even though every other segment finished.
 	downloadSegmentAttemptTimeout = 2 * time.Minute
 	// downloadRangeProbeTimeout bounds a single Range capability probe.
 	downloadRangeProbeTimeout = 15 * time.Second
-	// downloadRangeProbeAttempts bounds how often the probe is retried. The
-	// link to GitHub is intermittent on some hosts (roughly every other HTTPS
-	// request fails outright), and a failed probe would otherwise drop the
-	// whole transfer onto the far slower single-stream path.
-	downloadRangeProbeAttempts = 10
+	// downloadProbeBudget bounds how long the probe keeps retrying. The link to
+	// GitHub is intermittently blocked on some hosts - not merely slow - so a
+	// fixed attempt count would give up during an outage that would have
+	// recovered a minute later. Failed dials return immediately, which makes a
+	// long wall-clock budget cheap.
+	downloadProbeBudget = 8 * time.Minute
 	// downloadProbeRetryDelay is the pause between probe attempts.
 	downloadProbeRetryDelay = 2 * time.Second
 	// downloadSegmentBackoffMax caps the per-segment retry backoff.
@@ -241,7 +243,8 @@ func (c *githubReleaseClient) DownloadFile(ctx context.Context, url, dest string
 // the upstream link is intermittent on some hosts; only an explicit HTTP answer
 // is treated as authoritative.
 func (c *githubReleaseClient) probeDownloadRange(ctx context.Context, rawURL string) downloadRangeInfo {
-	for attempt := 0; attempt < downloadRangeProbeAttempts; attempt++ {
+	deadline := time.Now().Add(downloadProbeBudget)
+	for attempt := 0; ; attempt++ {
 		if attempt > 0 {
 			select {
 			case <-ctx.Done():
@@ -253,11 +256,10 @@ func (c *githubReleaseClient) probeDownloadRange(ctx context.Context, rawURL str
 		if ok {
 			return info
 		}
-		if ctx.Err() != nil {
+		if ctx.Err() != nil || time.Now().After(deadline) {
 			return downloadRangeInfo{}
 		}
 	}
-	return downloadRangeInfo{}
 }
 
 // probeDownloadRangeOnce performs one probe. The second result reports whether
