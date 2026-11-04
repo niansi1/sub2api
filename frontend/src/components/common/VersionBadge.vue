@@ -112,6 +112,13 @@
                       : t('version.upToDate')
                   }}
                 </p>
+                <p
+                  v-if="currentCommit"
+                  class="mt-0.5 font-mono text-[11px] text-gray-400 dark:text-dark-500"
+                  :title="currentCommit"
+                >
+                  {{ currentCommit.slice(0, 7) }}
+                </p>
               </div>
 
               <!-- Priority 1: Update error (must check before hasUpdate) -->
@@ -672,6 +679,12 @@ const dropdownRef = ref<HTMLElement | null>(null)
 // Use store's cached version state
 const loading = computed(() => appStore.versionLoading)
 const currentVersion = computed(() => appStore.currentVersion || props.version || '')
+// Build revision reported by the API; hidden when the build did not inject one
+// or when the value is the placeholder left by a plain `go build`.
+const currentCommit = computed(() => {
+  const commit = appStore.currentCommit
+  return commit && commit !== 'unknown' ? commit : ''
+})
 const latestVersion = computed(() => appStore.latestVersion)
 const hasUpdate = computed(() => appStore.hasUpdate)
 const releaseInfo = computed(() => appStore.releaseInfo)

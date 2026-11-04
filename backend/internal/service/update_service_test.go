@@ -69,6 +69,47 @@ func TestUpdateServicePerformUpdateNoUpdateReturnsSentinel(t *testing.T) {
 	require.ErrorIs(t, err, ErrNoUpdateAvailable)
 }
 
+// The in-place update panel reports the running binary's revision so operators
+// can tell which commit is actually deployed: VERSION alone drifts on custom
+// builds. ProvideUpdateService is the only path that carries Commit from the
+// build flags into UpdateService, so it gets its own guard.
+func TestProvideUpdateServiceReportsBuildCommit(t *testing.T) {
+	svc := ProvideUpdateService(
+		&updateServiceCacheStub{},
+		&updateServiceGitHubClientStub{
+			release: &GitHubRelease{TagName: "v0.1.132", Name: "v0.1.132"},
+		},
+		BuildInfo{Version: "0.1.132", Commit: "b76789ec5", BuildType: "release"},
+	)
+
+	info, err := svc.CheckUpdate(context.Background(), true)
+	require.NoError(t, err)
+	require.Equal(t, "b76789ec5", info.Commit)
+
+	// Cached reads must report the same revision as a fresh fetch: the cache
+	// stores release metadata only, never the running build's identity.
+	cached, err := svc.CheckUpdate(context.Background(), false)
+	require.NoError(t, err)
+	require.True(t, cached.Cached)
+	require.Equal(t, "b76789ec5", cached.Commit)
+}
+
+// A build that does not inject a revision leaves the field empty so the UI can
+// hide the line instead of rendering a placeholder.
+func TestProvideUpdateServiceLeavesCommitEmptyWithoutBuildInfo(t *testing.T) {
+	svc := ProvideUpdateService(
+		&updateServiceCacheStub{},
+		&updateServiceGitHubClientStub{
+			release: &GitHubRelease{TagName: "v0.1.132", Name: "v0.1.132"},
+		},
+		BuildInfo{Version: "0.1.132", BuildType: "source"},
+	)
+
+	info, err := svc.CheckUpdate(context.Background(), true)
+	require.NoError(t, err)
+	require.Empty(t, info.Commit)
+}
+
 func newRollbackTestService(current string, releases []*GitHubRelease) *UpdateService {
 	return NewUpdateService(
 		&updateServiceCacheStub{},

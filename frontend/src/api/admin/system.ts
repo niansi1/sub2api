@@ -13,6 +13,8 @@ export interface ReleaseInfo {
 
 export interface VersionInfo {
   current_version: string
+  /** VCS revision of the running binary; absent for builds that did not inject it */
+  commit?: string
   latest_version: string
   has_update: boolean
   release_info?: ReleaseInfo

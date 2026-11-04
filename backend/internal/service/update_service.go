@@ -67,6 +67,7 @@ type UpdateService struct {
 	cache          UpdateCache
 	githubClient   GitHubReleaseClient
 	currentVersion string
+	commit         string // VCS revision of the running binary, may be empty
 	buildType      string // "source" for manual builds, "release" for CI builds
 }
 
@@ -83,6 +84,7 @@ func NewUpdateService(cache UpdateCache, githubClient GitHubReleaseClient, versi
 // UpdateInfo contains update information
 type UpdateInfo struct {
 	CurrentVersion string       `json:"current_version"`
+	Commit         string       `json:"commit,omitempty"` // VCS revision of the running binary
 	LatestVersion  string       `json:"latest_version"`
 	HasUpdate      bool         `json:"has_update"`
 	ReleaseInfo    *ReleaseInfo `json:"release_info,omitempty"`
@@ -151,6 +153,7 @@ func (s *UpdateService) CheckUpdate(ctx context.Context, force bool) (*UpdateInf
 		}
 		return &UpdateInfo{
 			CurrentVersion: s.currentVersion,
+			Commit:         s.commit,
 			LatestVersion:  s.currentVersion,
 			HasUpdate:      false,
 			Warning:        err.Error(),
@@ -421,6 +424,7 @@ func (s *UpdateService) fetchLatestRelease(ctx context.Context) (*UpdateInfo, er
 
 	return &UpdateInfo{
 		CurrentVersion: s.currentVersion,
+		Commit:         s.commit,
 		LatestVersion:  latestVersion,
 		HasUpdate:      compareVersions(s.currentVersion, latestVersion) < 0,
 		ReleaseInfo: &ReleaseInfo{
@@ -617,6 +621,7 @@ func (s *UpdateService) getFromCache(ctx context.Context) (*UpdateInfo, error) {
 
 	return &UpdateInfo{
 		CurrentVersion: s.currentVersion,
+		Commit:         s.commit,
 		LatestVersion:  cached.Latest,
 		HasUpdate:      compareVersions(s.currentVersion, cached.Latest) < 0,
 		ReleaseInfo:    cached.ReleaseInfo,
