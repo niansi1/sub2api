@@ -15,9 +15,9 @@ services:
       dockerfile: Dockerfile
       args:
         NPM_CONFIG_REGISTRY: ${NPM_CONFIG_REGISTRY:-https://registry.npmmirror.com}
-        # Only needed on low-memory builders; set NODE_OPTIONS in the shell to
-        # cap the vite build heap (e.g. --max-old-space-size=3072).
-        NODE_OPTIONS: ${NODE_OPTIONS:-}
+        # Vite build heap cap. Defaults to the Dockerfile's value; override with
+        # NODE_OPTIONS in the shell on a builder that has plenty of RAM.
+        NODE_OPTIONS: ${NODE_OPTIONS:---max-old-space-size=3072}
     container_name: sub2api-dev
     restart: unless-stopped
     security_opt:
