@@ -164,6 +164,7 @@ func (s *GitHubReleaseServiceSuite) TestDownloadFile_SegmentedRange() {
 // restarting, which is what makes the parallel path usable on flaky links.
 func (s *GitHubReleaseServiceSuite) TestDownloadFile_SegmentedResumesAfterDrop() {
 	payload := bytes.Repeat([]byte("0123456789abcdef"), 40000) // 640 KB
+	segmentSize := (int64(len(payload)) + downloadSegmentParallelism - 1) / downloadSegmentParallelism
 	var mu sync.Mutex
 	attempts := map[string]int{}
 
@@ -173,33 +174,43 @@ func (s *GitHubReleaseServiceSuite) TestDownloadFile_SegmentedResumesAfterDrop()
 		attempts[httpRange]++
 		seen := attempts[httpRange]
 		mu.Unlock()
+		if httpRange == "" {
+			http.Error(w, "single-stream fallback must not hide a failed resume", http.StatusBadGateway)
+			return
+		}
 
-		// Drop the very first request for every range after delivering only a
-		// prefix, so each segment must resume to make progress.
-		if seen == 1 && httpRange != "" {
-			var start, end int64
-			if _, err := fmt.Sscanf(httpRange, "bytes=%d-%d", &start, &end); err == nil {
-				w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", start, end, len(payload)))
-				w.WriteHeader(http.StatusPartialContent)
-				if fl, ok := w.(http.Flusher); ok {
-					fl.Flush()
-				}
-				_, _ = w.Write(payload[start:min64(start+1024, end+1)])
-				return
-			}
+		// Only the original request for each segment is shortened. Resumed
+		// ranges have a different start and must be allowed to complete.
+		var start, end int64
+		if _, err := fmt.Sscanf(httpRange, "bytes=%d-%d", &start, &end); err == nil &&
+			httpRange != "bytes=0-0" && start%segmentSize == 0 && seen == 1 {
+			w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", start, end, len(payload)))
+			w.WriteHeader(http.StatusPartialContent)
+			w.(http.Flusher).Flush() // chunked body: clean EOF, not transport UnexpectedEOF
+			_, _ = w.Write(payload[start:min64(start+1024, end+1)])
+			return
 		}
 		http.ServeContent(w, r, "asset.tar.gz", time.Time{}, bytes.NewReader(payload))
 	}))
 
 	s.client = newTestGitHubReleaseClient()
-
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
 	dest := filepath.Join(s.tempDir, "resumed.bin")
-	err := s.client.DownloadFile(context.Background(), s.srv.URL+"/asset.tar.gz", dest, int64(len(payload))+1024)
+	err := s.client.DownloadFile(ctx, s.srv.URL+"/asset.tar.gz", dest, int64(len(payload))+1024)
 	s.Require().NoError(err)
 
 	got, readErr := os.ReadFile(dest)
 	s.Require().NoError(readErr)
 	s.Require().True(bytes.Equal(payload, got), "resumed download must reproduce the source bytes")
+	mu.Lock()
+	defer mu.Unlock()
+	s.Require().Zero(attempts[""], "resumes must complete without a whole-file fallback")
+	for start := int64(0); start < int64(len(payload)); start += segmentSize {
+		end := min64(start+segmentSize-1, int64(len(payload))-1)
+		resumeRange := fmt.Sprintf("bytes=%d-%d", start+1024, end)
+		s.Require().Equal(1, attempts[resumeRange], "missing remaining-range request %s", resumeRange)
+	}
 }
 
 func min64(a, b int64) int64 {

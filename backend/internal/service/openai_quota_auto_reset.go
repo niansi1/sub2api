@@ -414,21 +414,6 @@ func (s *OpenAIQuotaAutoResetService) evaluateAccount(ctx context.Context, accou
 	}
 	stableKey := fmt.Sprintf("oarc:%d:%s:%s", accountID, creditHash, cycleHash)
 	redeemRequestID := uuid.NewSHA1(uuid.NameSpaceURL, []byte(stableKey)).String()
-	if assessment.expiryReached && !assessment.resetReached {
-		assessment.triggerWindow = "expiry"
-	}
-	resetting := &OpenAIAutoResetCreditState{
-		Status:            OpenAIAutoResetStatusResetting,
-		TriggerWindow:     assessment.triggerWindow,
-		AvailableCount:    available,
-		CheckedAt:         now.UTC().Format(time.RFC3339),
-		AttemptCycleHash:  cycleHash,
-		AttemptCreditHash: creditHash,
-	}
-	if err := s.persistState(ctx, accountID, resetting); err != nil {
-		return err
-	}
-
 	account, err = s.accountRepo.GetByID(ctx, accountID)
 	if err != nil || account == nil {
 		return err
@@ -451,6 +436,19 @@ func (s *OpenAIQuotaAutoResetService) evaluateAccount(ctx context.Context, accou
 	attemptTTL := time.Until(expiresAt) + 24*time.Hour
 	if attemptTTL < openAIAutoResetAttemptTTL {
 		attemptTTL = openAIAutoResetAttemptTTL
+	}
+	// All cancellable preflight checks must precede a new pending attempt. An
+	// existing uncertain attempt was copied into checking above and stays pinned.
+	resetting := &OpenAIAutoResetCreditState{
+		Status:            OpenAIAutoResetStatusResetting,
+		TriggerWindow:     assessment.triggerWindow,
+		AvailableCount:    available,
+		CheckedAt:         time.Now().UTC().Format(time.RFC3339),
+		AttemptCycleHash:  cycleHash,
+		AttemptCreditHash: creditHash,
+	}
+	if err := s.persistState(ctx, accountID, resetting); err != nil {
+		return err
 	}
 	result, err := s.idempotency.Execute(ctx, IdempotencyExecuteOptions{
 		Scope:          "openai_auto_reset_credit",
@@ -829,6 +827,13 @@ func openAIAutoResetStateStale(state *OpenAIAutoResetCreditState, now time.Time)
 	}
 	checkedAt, err := time.Parse(time.RFC3339, state.CheckedAt)
 	return err != nil || now.Sub(checkedAt) >= openAIAutoResetSnapshotTTL
+}
+
+// openAIAutoResetCreditReadyForScheduling keeps completed redemption history
+// while allowing fresh remaining credits to bridge the ordinary pause threshold.
+func openAIAutoResetCreditReadyForScheduling(state *OpenAIAutoResetCreditState, now time.Time) bool {
+	return state != nil && state.AvailableCount > 0 && !openAIAutoResetStateStale(state, now) &&
+		(state.Status == OpenAIAutoResetStatusAvailable || state.Status == OpenAIAutoResetStatusSuccess)
 }
 
 func stateAvailableCount(state *OpenAIAutoResetCreditState) int {

@@ -3,6 +3,7 @@ package repository
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -216,6 +217,56 @@ const (
 	downloadSegmentBackoffMax = 20 * time.Second
 )
 
+// errInvalidDownloadRange marks protocol errors that cannot be repaired by
+// resuming the same segment. The caller falls back to a bounded whole-file GET.
+var errInvalidDownloadRange = errors.New("invalid range response")
+
+type downloadContentRange struct {
+	start int64
+	end   int64
+	total int64
+}
+
+// parseDownloadContentRange accepts one complete byte range with a known size.
+// Wildcards, multiple ranges and trailing data cannot describe a segment safely.
+func parseDownloadContentRange(value string) (downloadContentRange, error) {
+	invalid := func() (downloadContentRange, error) {
+		return downloadContentRange{}, fmt.Errorf("invalid Content-Range %q", value)
+	}
+	unit, bounds, ok := strings.Cut(strings.TrimSpace(value), " ")
+	if !ok || !strings.EqualFold(unit, "bytes") {
+		return invalid()
+	}
+	span, size, ok := strings.Cut(bounds, "/")
+	if !ok {
+		return invalid()
+	}
+	first, last, ok := strings.Cut(span, "-")
+	if !ok {
+		return invalid()
+	}
+	var numbers [3]int64
+	for i, part := range []string{first, last, size} {
+		if part == "" {
+			return invalid()
+		}
+		for _, digit := range part {
+			if digit < '0' || digit > '9' {
+				return invalid()
+			}
+		}
+		number, err := strconv.ParseInt(part, 10, 64)
+		if err != nil {
+			return invalid()
+		}
+		numbers[i] = number
+	}
+	if numbers[0] > numbers[1] || numbers[1] >= numbers[2] {
+		return invalid()
+	}
+	return downloadContentRange{start: numbers[0], end: numbers[1], total: numbers[2]}, nil
+}
+
 // downloadRangeInfo describes what the origin told us about the asset.
 type downloadRangeInfo struct {
 	size   int64 // total number of bytes, only valid when ranged is true
@@ -281,7 +332,6 @@ func (c *githubReleaseClient) probeDownloadRangeOnce(ctx context.Context, rawURL
 		return downloadRangeInfo{}, false
 	}
 	defer func() { _ = resp.Body.Close() }()
-	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1))
 
 	// Definitive answers that retrying cannot change: the origin served the
 	// whole file (no Range support, use the single-stream path) or rejected the
@@ -289,30 +339,35 @@ func (c *githubReleaseClient) probeDownloadRangeOnce(ctx context.Context, rawURL
 	if resp.StatusCode == http.StatusOK || (resp.StatusCode >= 400 && resp.StatusCode < 500 && resp.StatusCode != http.StatusTooManyRequests) {
 		return downloadRangeInfo{}, true
 	}
-	// Everything else (5xx, 429, truncated body) is transient: retry.
+	// Transient HTTP/transport failures retain the existing probe retry budget.
 	if resp.StatusCode != http.StatusPartialContent {
 		return downloadRangeInfo{}, false
 	}
 
-	var total int64
-	if contentRange := resp.Header.Get("Content-Range"); contentRange != "" {
-		if _, after, ok := strings.Cut(contentRange, "/"); ok {
-			if parsed, parseErr := strconv.ParseInt(strings.TrimSpace(after), 10, 64); parseErr == nil {
-				total = parsed
-			}
-		}
+	contentRange, err := parseDownloadContentRange(resp.Header.Get("Content-Range"))
+	if err != nil || contentRange.start != 0 || contentRange.end != 0 {
+		return downloadRangeInfo{}, true
 	}
-	if total <= 0 {
-		total = resp.ContentLength
+	if resp.ContentLength >= 0 && resp.ContentLength != 1 {
+		return downloadRangeInfo{}, true
 	}
-	if total <= 0 {
+	// The probe itself must contain exactly the one byte it advertised. Read
+	// one extra byte to detect a server that sends the whole asset as a 206.
+	n, err := io.Copy(io.Discard, io.LimitReader(resp.Body, 2))
+	if err != nil {
 		return downloadRangeInfo{}, false
 	}
-	return downloadRangeInfo{size: total, ranged: true}, true
+	if n != 1 {
+		return downloadRangeInfo{}, true
+	}
+	return downloadRangeInfo{size: contentRange.total, ranged: true}, true
 }
 
 // downloadSegmented fetches the asset as contiguous byte ranges in parallel.
 func (c *githubReleaseClient) downloadSegmented(ctx context.Context, rawURL, dest string, total, maxSize int64) error {
+	if total <= 0 {
+		return fmt.Errorf("invalid download size: %d", total)
+	}
 	if total > maxSize {
 		return fmt.Errorf("file too large: %d bytes (max %d)", total, maxSize)
 	}
@@ -352,7 +407,7 @@ func (c *githubReleaseClient) downloadSegmented(ctx context.Context, rawURL, des
 		wg.Add(1)
 		go func(start, end int64) {
 			defer wg.Done()
-			if err := c.downloadSegment(segCtx, rawURL, out, start, end); err != nil {
+			if err := c.downloadSegment(segCtx, rawURL, out, start, end, total); err != nil {
 				errOnce.Do(func() {
 					firstErr = err
 					cancel()
@@ -365,6 +420,13 @@ func (c *githubReleaseClient) downloadSegmented(ctx context.Context, rawURL, des
 	if firstErr != nil {
 		return abort(firstErr)
 	}
+	info, err := out.Stat()
+	if err != nil {
+		return abort(err)
+	}
+	if info.Size() != total {
+		return abort(fmt.Errorf("download size mismatch: got %d bytes, expected %d", info.Size(), total))
+	}
 	if err := out.Sync(); err != nil {
 		return abort(err)
 	}
@@ -373,7 +435,7 @@ func (c *githubReleaseClient) downloadSegmented(ctx context.Context, rawURL, des
 
 // downloadSegment fetches bytes [start, end] and resumes after a dropped
 // connection instead of discarding the whole segment.
-func (c *githubReleaseClient) downloadSegment(ctx context.Context, rawURL string, out *os.File, start, end int64) error {
+func (c *githubReleaseClient) downloadSegment(ctx context.Context, rawURL string, out *os.File, start, end, total int64) error {
 	offset := start
 	var lastErr error
 	for attempt := 0; attempt < downloadSegmentAttempts && offset <= end; attempt++ {
@@ -390,26 +452,31 @@ func (c *githubReleaseClient) downloadSegment(ctx context.Context, rawURL string
 			case <-time.After(delay):
 			}
 		}
-		written, err := c.downloadSegmentOnce(ctx, rawURL, out, offset, end)
+		written, err := c.downloadSegmentOnce(ctx, rawURL, out, offset, end, total)
 		offset += written
-		if err == nil {
-			break
-		}
-		lastErr = err
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-	}
-	if offset <= end {
-		if lastErr == nil {
-			lastErr = fmt.Errorf("incomplete range download: bytes %d-%d stopped at %d", start, end, offset)
+		if err == nil {
+			if offset > end {
+				return nil
+			}
+			err = io.ErrUnexpectedEOF
 		}
-		return lastErr
+		// Invalid ranges and extra data must fail even when all requested
+		// bytes were already written; otherwise offset alone could hide them.
+		if errors.Is(err, errInvalidDownloadRange) || offset > end {
+			return err
+		}
+		lastErr = err
 	}
-	return nil
+	if lastErr == nil {
+		lastErr = fmt.Errorf("incomplete range download: bytes %d-%d stopped at %d", start, end, offset)
+	}
+	return lastErr
 }
 
-func (c *githubReleaseClient) downloadSegmentOnce(ctx context.Context, rawURL string, out *os.File, start, end int64) (int64, error) {
+func (c *githubReleaseClient) downloadSegmentOnce(ctx context.Context, rawURL string, out *os.File, start, end, total int64) (int64, error) {
 	// Bound each attempt so a stalled connection cannot hold the transfer open
 	// until the (much longer) download client timeout fires.
 	attemptCtx, cancel := context.WithTimeout(ctx, downloadSegmentAttemptTimeout)
@@ -430,21 +497,50 @@ func (c *githubReleaseClient) downloadSegmentOnce(ctx context.Context, rawURL st
 	if resp.StatusCode != http.StatusPartialContent {
 		return 0, fmt.Errorf("range request returned %d", resp.StatusCode)
 	}
+	contentRange, err := parseDownloadContentRange(resp.Header.Get("Content-Range"))
+	if err != nil {
+		return 0, fmt.Errorf("%w: %v", errInvalidDownloadRange, err)
+	}
+	if contentRange.start != start || contentRange.end != end || contentRange.total != total {
+		return 0, fmt.Errorf("%w: Content-Range %q does not match bytes %d-%d/%d", errInvalidDownloadRange, resp.Header.Get("Content-Range"), start, end, total)
+	}
+	expected := end - start + 1
+	if resp.ContentLength >= 0 && resp.ContentLength != expected {
+		return 0, fmt.Errorf("%w: Content-Length %d does not match %d bytes", errInvalidDownloadRange, resp.ContentLength, expected)
+	}
 
 	buf := make([]byte, 128*1024)
 	var written int64
 	for {
-		n, readErr := resp.Body.Read(buf)
+		// Read at most the remaining range plus one extra byte. Extra data is
+		// rejected before WriteAt, so it cannot overwrite another segment or
+		// extend the preallocated file beyond the checked total/maxSize.
+		remaining := expected - written
+		readSize := int64(len(buf))
+		if remaining < readSize {
+			readSize = remaining + 1
+		}
+		n, readErr := resp.Body.Read(buf[:int(readSize)])
+		if int64(n) > remaining {
+			return written, fmt.Errorf("%w: body exceeds bytes %d-%d", errInvalidDownloadRange, start, end)
+		}
 		if n > 0 {
 			// WriteAt does not move the shared file offset, so every segment can
 			// write concurrently through the same file handle.
-			if _, writeErr := out.WriteAt(buf[:n], start+written); writeErr != nil {
+			nWritten, writeErr := out.WriteAt(buf[:n], start+written)
+			written += int64(nWritten)
+			if writeErr != nil {
 				return written, writeErr
 			}
-			written += int64(n)
+			if nWritten != n {
+				return written, io.ErrShortWrite
+			}
 		}
 		if readErr != nil {
 			if readErr == io.EOF {
+				if written != expected {
+					return written, io.ErrUnexpectedEOF
+				}
 				return written, nil
 			}
 			return written, readErr

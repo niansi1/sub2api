@@ -2823,6 +2823,12 @@ func (r *accountRepository) UpdateExtra(ctx context.Context, id int64, updates m
 		}
 	}
 	extraExpression := "COALESCE(extra, '{}'::jsonb) || $1::jsonb"
+	if _, canonicalObservation := updates["codex_usage_updated_at"]; canonicalObservation {
+		// Preserve the observation time of legacy windows omitted by a partial
+		// snapshot. Existing per-window timestamps win; incoming fields win last.
+		// This is part of the same guarded JSONB UPDATE, not a read/modify/write.
+		extraExpression = "jsonb_strip_nulls(jsonb_build_object('codex_5h_usage_updated_at', extra->'codex_usage_updated_at', 'codex_7d_usage_updated_at', extra->'codex_usage_updated_at')) || " + extraExpression
+	}
 	if clearProbeSnapshot {
 		extraExpression = "(" + extraExpression + ") - 'upstream_billing_probe'"
 	}

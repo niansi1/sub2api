@@ -272,7 +272,7 @@ func openAIThresholdCandidate(extra map[string]any, window string, now time.Time
 	if !ok {
 		return nil
 	}
-	if openAIQuotaWindowReset(extra, window, now) || (openAICodexSnapshotStaleForPause(extra, now) && !openAIQuotaWindowResetPending(extra, window, now)) {
+	if openAIQuotaWindowReset(extra, window, now) || (openAICodexWindowStaleForPause(extra, window, now) && !openAIQuotaWindowResetPending(extra, window, now)) {
 		return nil
 	}
 	until := parseSchedulingResetAt(extra[resetAtKey])
@@ -307,12 +307,8 @@ func openAIThresholdFallbackUntil(extra map[string]any, window string, now time.
 	if !ok {
 		return nil
 	}
-	updatedRaw, exists := extra["codex_usage_updated_at"]
-	if !exists || updatedRaw == nil {
-		return nil
-	}
-	updatedAt, err := parseTime(fmt.Sprint(updatedRaw))
-	if err != nil {
+	updatedAt, ok := openAICodexWindowObservedAt(extra, window)
+	if !ok {
 		return nil
 	}
 	until := updatedAt.Add(windowLength)

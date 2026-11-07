@@ -562,7 +562,7 @@ func shouldAutoPauseOpenAIAccountByQuota(ctx context.Context, account *Account) 
 		}
 		if pauseReached5h || pauseReached7d {
 			state := openAIAutoResetStateFromExtra(account.Extra)
-			if state != nil && state.Status == OpenAIAutoResetStatusAvailable && state.AvailableCount > 0 && !openAIAutoResetStateStale(state, now) {
+			if openAIAutoResetCreditReadyForScheduling(state, now) {
 				return false, openAIQuotaAutoPauseDecision{}
 			}
 			notifyOpenAIAutoResetFromScheduler(account.ID)
@@ -695,7 +695,7 @@ func resolveOpenAIQuotaUtilization(extra map[string]any, window string, now time
 	}
 	// 快照过于陈旧且没有明确的未来重置时间时，不再据此暂停。放行后下一次响应头
 	// 会刷新快照实现自愈，避免账号在错误/过期的 used% 上被永久跳过（issue #2994）。
-	if openAICodexSnapshotStaleForPause(extra, now) && !openAIQuotaWindowResetPending(extra, window, now) {
+	if openAICodexWindowStaleForPause(extra, window, now) && !openAIQuotaWindowResetPending(extra, window, now) {
 		return 0, false
 	}
 	return usedPercent / 100, true
@@ -714,18 +714,29 @@ func openAIQuotaWindowResetPending(extra map[string]any, window string, now time
 // auto-pause, and a genuinely-exhausted account that is actively served refreshes the
 // timestamp on every response so it never crosses the staleness bound.
 func openAICodexSnapshotStaleForPause(extra map[string]any, now time.Time) bool {
+	updatedAt, ok := openAICodexWindowObservedAt(extra, "")
+	return ok && now.Sub(updatedAt) >= openAICodexAutoPauseStaleAfter
+}
+
+// Window timestamps take precedence. The shared timestamp is only a legacy
+// fallback; UpdateExtra freezes it onto legacy windows before a partial update.
+func openAICodexWindowObservedAt(extra map[string]any, window string) (time.Time, bool) {
 	if len(extra) == 0 {
-		return false
+		return time.Time{}, false
 	}
-	updatedRaw, ok := extra["codex_usage_updated_at"]
-	if !ok {
-		return false
+	key := "codex_usage_updated_at"
+	if window != "" {
+		if _, exists := extra["codex_"+window+"_usage_updated_at"]; exists {
+			key = "codex_" + window + "_usage_updated_at"
+		}
 	}
-	updatedAt, err := parseTime(fmt.Sprint(updatedRaw))
-	if err != nil {
-		return false
-	}
-	return now.Sub(updatedAt) >= openAICodexAutoPauseStaleAfter
+	updatedAt, err := parseTime(fmt.Sprint(extra[key]))
+	return updatedAt, err == nil
+}
+
+func openAICodexWindowStaleForPause(extra map[string]any, window string, now time.Time) bool {
+	updatedAt, ok := openAICodexWindowObservedAt(extra, window)
+	return ok && now.Sub(updatedAt) >= openAICodexAutoPauseStaleAfter
 }
 
 // openAIQuotaWindowReset reports whether the Codex usage window's reset time has
@@ -751,8 +762,8 @@ func openAICodexWindowResetAt(extra map[string]any, window string) (time.Time, b
 	if resetAfter <= 0 {
 		return time.Time{}, false
 	}
-	updatedAt, err := parseTime(fmt.Sprint(extra["codex_usage_updated_at"]))
-	if err != nil {
+	updatedAt, ok := openAICodexWindowObservedAt(extra, window)
+	if !ok {
 		return time.Time{}, false
 	}
 	return updatedAt.Add(time.Duration(resetAfter) * time.Second), true

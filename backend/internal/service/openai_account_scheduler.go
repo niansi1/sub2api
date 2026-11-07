@@ -3094,7 +3094,7 @@ func openAIQuotaHeadroomFactor(account *Account, now time.Time) float64 {
 	}
 
 	factor := 1 - clamp01(window7d.usedPercent/100)
-	if window5h.hasUsed && !window5h.reset {
+	if window5h.hasUsed && !window5h.reset && !openAIQuotaHeadroomWindowStale(account.Extra, "5h", now) {
 		remaining := 1 - clamp01(window5h.usedPercent/100)
 		if remaining < openAIQuotaHeadroomSecondaryLowRemain {
 			factor *= openAIQuotaHeadroomNeutralFactor
@@ -3172,15 +3172,12 @@ func openAISchedulingResetWindowEnd(account *Account, now time.Time) (time.Time,
 }
 
 func openAIQuotaHeadroomSnapshotStale(extra map[string]any, now time.Time) bool {
-	updatedRaw, ok := extra["codex_usage_updated_at"]
-	if !ok {
-		return true
-	}
-	updatedAt, err := parseTime(fmt.Sprint(updatedRaw))
-	if err != nil {
-		return true
-	}
-	return now.Sub(updatedAt) >= openAIQuotaHeadroomSnapshotStaleAfter
+	return openAIQuotaHeadroomWindowStale(extra, "7d", now)
+}
+
+func openAIQuotaHeadroomWindowStale(extra map[string]any, window string, now time.Time) bool {
+	updatedAt, ok := openAICodexWindowObservedAt(extra, window)
+	return !ok || now.Sub(updatedAt) >= openAIQuotaHeadroomSnapshotStaleAfter
 }
 
 func clamp01(value float64) float64 {

@@ -1599,10 +1599,8 @@ func buildCodexUsageProgressFromExtra(extra map[string]any, window string, now t
 	if progress.ResetsAt == nil {
 		if resetAfterSeconds := parseExtraInt(extra[resetAfterKey]); resetAfterSeconds > 0 {
 			base := now
-			if updatedAtRaw, ok := extra["codex_usage_updated_at"]; ok {
-				if updatedAt, err := parseTime(fmt.Sprint(updatedAtRaw)); err == nil {
-					base = updatedAt
-				}
+			if updatedAt, ok := openAICodexWindowObservedAt(extra, window); ok {
+				base = updatedAt
 			}
 			resetAt := base.Add(time.Duration(resetAfterSeconds) * time.Second)
 			progress.ResetsAt = &resetAt

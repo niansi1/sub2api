@@ -283,7 +283,12 @@ func TestBuildCodexUsageExtraUpdates_NonCanonicalWindowSkipsCanonicalFields(t *t
 		t.Run(tt.name, func(t *testing.T) {
 			updates := buildCodexUsageExtraUpdates(tt.snapshot, now)
 			require.Equal(t, tt.wantPrime, updates["codex_primary_used_percent"])
-			require.Equal(t, now.Format(time.RFC3339), updates["codex_usage_updated_at"])
+			require.Equal(t, now.Format(time.RFC3339Nano), updates["codex_raw_usage_updated_at"])
+			if tt.want5h == nil && tt.want7d == nil {
+				require.NotContains(t, updates, "codex_usage_updated_at")
+			} else {
+				require.Equal(t, now.Format(time.RFC3339), updates["codex_usage_updated_at"])
+			}
 			for window, want := range map[string]any{"5h": tt.want5h, "7d": tt.want7d} {
 				if want == nil {
 					for _, suffix := range []string{"used_percent", "reset_after_seconds", "window_minutes", "reset_at"} {
@@ -354,7 +359,6 @@ func TestBuildCodexUsageExtraUpdates_WithoutNormalizedWindowFields(t *testing.T)
 	if _, ok := updates["codex_5h_reset_at"]; ok {
 		t.Fatalf("did not expect codex_5h_reset_at in updates: %v", updates["codex_5h_reset_at"])
 	}
-	if _, ok := updates["codex_7d_reset_at"]; ok {
-		t.Fatalf("did not expect codex_7d_reset_at in updates: %v", updates["codex_7d_reset_at"])
-	}
+	require.Contains(t, updates, "codex_7d_reset_at")
+	require.Nil(t, updates["codex_7d_reset_at"], "a fresh used-only observation must clear the old reset")
 }

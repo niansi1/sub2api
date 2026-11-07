@@ -722,34 +722,13 @@ func buildCodexSparkWindowExtraUpdates(usage *OpenAIQuotaUsage, now time.Time) m
 	}
 
 	updates := make(map[string]any)
-	if normalized.Used5hPercent != nil {
-		updates["codex_5h_used_percent"] = *normalized.Used5hPercent
-	}
-	if normalized.Reset5hSeconds != nil {
-		updates["codex_5h_reset_after_seconds"] = *normalized.Reset5hSeconds
-	}
-	if normalized.Window5hMinutes != nil {
-		updates["codex_5h_window_minutes"] = *normalized.Window5hMinutes
-	}
-	if normalized.Used7dPercent != nil {
-		updates["codex_7d_used_percent"] = *normalized.Used7dPercent
-	}
-	if normalized.Reset7dSeconds != nil {
-		updates["codex_7d_reset_after_seconds"] = *normalized.Reset7dSeconds
-	}
-	if normalized.Window7dMinutes != nil {
-		updates["codex_7d_window_minutes"] = *normalized.Window7dMinutes
-	}
-	if r := codexResetAtRFC3339(now, normalized.Reset5hSeconds); r != nil {
-		updates["codex_5h_reset_at"] = *r
-	}
-	if r := codexResetAtRFC3339(now, normalized.Reset7dSeconds); r != nil {
-		updates["codex_7d_reset_at"] = *r
-	}
+	addCodexWindowExtraUpdates(updates, "5h", normalized.Used5hPercent, normalized.Reset5hSeconds, normalized.Window5hMinutes, now)
+	addCodexWindowExtraUpdates(updates, "7d", normalized.Used7dPercent, normalized.Reset7dSeconds, normalized.Window7dMinutes, now)
 	if len(updates) == 0 {
 		return nil
 	}
 	updates["codex_usage_updated_at"] = now.Format(time.RFC3339)
+	updates[OpenAICodexUsageObservedAtUnixNanoExtraKey] = now.UnixNano()
 	return updates
 }
 

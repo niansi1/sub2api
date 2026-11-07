@@ -1114,40 +1114,46 @@ func buildCodexUsageExtraUpdates(snapshot *OpenAICodexUsageSnapshot, fallbackNow
 	if snapshot.PrimaryOverSecondaryPercent != nil {
 		updates["codex_primary_over_secondary_percent"] = *snapshot.PrimaryOverSecondaryPercent
 	}
-	updates["codex_usage_updated_at"] = baseTime.Format(time.RFC3339)
-	if !baseTime.IsZero() {
+	updates["codex_raw_usage_updated_at"] = baseTime.Format(time.RFC3339Nano)
+
+	// A canonical window is a complete observation: usage, its own observation
+	// time, and reset metadata. Missing reset fields explicitly replace old
+	// metadata with JSON null rather than inheriting a previous quota cycle.
+	if normalized := snapshot.normalizeCanonical(); normalized != nil {
+		addCodexWindowExtraUpdates(updates, "5h", normalized.Used5hPercent, normalized.Reset5hSeconds, normalized.Window5hMinutes, baseTime)
+		addCodexWindowExtraUpdates(updates, "7d", normalized.Used7dPercent, normalized.Reset7dSeconds, normalized.Window7dMinutes, baseTime)
+	}
+	if _, fiveHour := updates["codex_5h_usage_updated_at"]; fiveHour {
+		updates["codex_usage_updated_at"] = baseTime.Format(time.RFC3339)
+	} else if _, weekly := updates["codex_7d_usage_updated_at"]; weekly {
+		updates["codex_usage_updated_at"] = baseTime.Format(time.RFC3339)
+	}
+	if _, canonical := updates["codex_usage_updated_at"]; canonical && !baseTime.IsZero() {
 		updates[OpenAICodexUsageObservedAtUnixNanoExtraKey] = baseTime.UnixNano()
 	}
 
-	// 归一化到 5h/7d 规范字段；非 5h/周级的窗口（如生图 24h 额度）只保留上面的原始字段
-	if normalized := snapshot.normalizeCanonical(); normalized != nil {
-		if normalized.Used5hPercent != nil {
-			updates["codex_5h_used_percent"] = *normalized.Used5hPercent
-		}
-		if normalized.Reset5hSeconds != nil {
-			updates["codex_5h_reset_after_seconds"] = *normalized.Reset5hSeconds
-		}
-		if normalized.Window5hMinutes != nil {
-			updates["codex_5h_window_minutes"] = *normalized.Window5hMinutes
-		}
-		if normalized.Used7dPercent != nil {
-			updates["codex_7d_used_percent"] = *normalized.Used7dPercent
-		}
-		if normalized.Reset7dSeconds != nil {
-			updates["codex_7d_reset_after_seconds"] = *normalized.Reset7dSeconds
-		}
-		if normalized.Window7dMinutes != nil {
-			updates["codex_7d_window_minutes"] = *normalized.Window7dMinutes
-		}
-		if reset5hAt := codexResetAtRFC3339(baseTime, normalized.Reset5hSeconds); reset5hAt != nil {
-			updates["codex_5h_reset_at"] = *reset5hAt
-		}
-		if reset7dAt := codexResetAtRFC3339(baseTime, normalized.Reset7dSeconds); reset7dAt != nil {
-			updates["codex_7d_reset_at"] = *reset7dAt
+	return updates
+}
+
+// addCodexWindowExtraUpdates keeps each quota window's sample and reset identity
+// together. JSON null is intentional: UpdateExtra atomically merges JSONB maps.
+func addCodexWindowExtraUpdates(updates map[string]any, window string, used *float64, resetSeconds, windowMinutes *int, observedAt time.Time) {
+	prefix := "codex_" + window + "_"
+	if used != nil {
+		updates[prefix+"used_percent"] = *used
+		updates[prefix+"usage_updated_at"] = observedAt.Format(time.RFC3339Nano)
+		updates[prefix+"reset_after_seconds"] = nil
+		updates[prefix+"reset_at"] = nil
+	}
+	if resetSeconds != nil {
+		updates[prefix+"reset_after_seconds"] = *resetSeconds
+		if resetAt := codexResetAtRFC3339(observedAt, resetSeconds); resetAt != nil {
+			updates[prefix+"reset_at"] = *resetAt
 		}
 	}
-
-	return updates
+	if windowMinutes != nil {
+		updates[prefix+"window_minutes"] = *windowMinutes
+	}
 }
 
 // codexSnapshotNearLimit reports whether a snapshot about to be persisted
@@ -1176,11 +1182,16 @@ func codexSnapshotNearLimit(updates map[string]any, bypassPercent float64) bool 
 // an admin who pauses accounts below the built-in 90% still has the crossing
 // detected on the first request past the line, while 100 (auto-pause disabled)
 // keeps the historical 90% default.
-func (s *OpenAIGatewayService) codexSnapshotBypassPercent(ctx context.Context) float64 {
-	if s == nil || s.settingService == nil {
-		return openAICodexSnapshotNearLimitPercent
+func (s *OpenAIGatewayService) codexSnapshotBypassPercent(ctx context.Context, accounts ...*Account) float64 {
+	var account *Account
+	if len(accounts) > 0 {
+		account = accounts[0]
 	}
-	threshold, ok := s.settingService.GetAccountSchedulingThresholds(ctx)[PlatformOpenAI]
+	var thresholds map[string]int
+	if s != nil && s.settingService != nil {
+		thresholds = s.settingService.GetAccountSchedulingThresholds(ctx)
+	}
+	threshold, ok := resolveEffectiveAccountSchedulingThreshold(account, thresholds, PlatformOpenAI)
 	if !ok || threshold <= 0 || threshold >= 100 {
 		return openAICodexSnapshotNearLimitPercent
 	}
@@ -1195,7 +1206,7 @@ func (s *OpenAIGatewayService) codexSnapshotBypassPercent(ctx context.Context) f
 // ⚠️ 调用方必须排除 spark 影子账号(account.IsShadow()):影子的 codex_* 仅由 QueryUsage
 // (/wham/usage bengalfox 道)更新,不能被全局头口径污染(外审第7轮 P1)。本函数仅持 accountID,
 // 无法在此自检影子,故守卫前置到各调用点。
-func (s *OpenAIGatewayService) updateCodexUsageSnapshot(ctx context.Context, accountID int64, snapshot *OpenAICodexUsageSnapshot) {
+func (s *OpenAIGatewayService) updateCodexUsageSnapshot(ctx context.Context, accountID int64, snapshot *OpenAICodexUsageSnapshot, accounts ...*Account) {
 	if snapshot == nil {
 		return
 	}
@@ -1208,7 +1219,7 @@ func (s *OpenAIGatewayService) updateCodexUsageSnapshot(ctx context.Context, acc
 	if len(updates) == 0 {
 		return
 	}
-	if !codexSnapshotNearLimit(updates, s.codexSnapshotBypassPercent(ctx)) && !s.getCodexSnapshotThrottle().Allow(accountID, now) {
+	if !codexSnapshotNearLimit(updates, s.codexSnapshotBypassPercent(ctx, accounts...)) && !s.getCodexSnapshotThrottle().Allow(accountID, now) {
 		return
 	}
 
@@ -1221,14 +1232,14 @@ func (s *OpenAIGatewayService) updateCodexUsageSnapshot(ctx context.Context, acc
 	}()
 }
 
-func (s *OpenAIGatewayService) UpdateCodexUsageSnapshotFromHeaders(ctx context.Context, accountID int64, headers http.Header) {
-	s.UpdateCodexUsageSnapshotFromHeadersAt(ctx, accountID, headers, time.Time{})
+func (s *OpenAIGatewayService) UpdateCodexUsageSnapshotFromHeaders(ctx context.Context, accountID int64, headers http.Header, accounts ...*Account) {
+	s.UpdateCodexUsageSnapshotFromHeadersAt(ctx, accountID, headers, time.Time{}, accounts...)
 }
 
 // UpdateCodexUsageSnapshotFromHeadersAt 与 UpdateCodexUsageSnapshotFromHeaders 相同，
 // 但允许调用方声明响应头的真实观测时刻。observedAt 为零值时按"当前"处理。
 // WebSocket 路径必须传入握手时刻，因为池化连接会复用同一份握手响应头。
-func (s *OpenAIGatewayService) UpdateCodexUsageSnapshotFromHeadersAt(ctx context.Context, accountID int64, headers http.Header, observedAt time.Time) {
+func (s *OpenAIGatewayService) UpdateCodexUsageSnapshotFromHeadersAt(ctx context.Context, accountID int64, headers http.Header, observedAt time.Time, accounts ...*Account) {
 	if accountID <= 0 || headers == nil {
 		return
 	}
@@ -1239,7 +1250,7 @@ func (s *OpenAIGatewayService) UpdateCodexUsageSnapshotFromHeadersAt(ctx context
 	if !observedAt.IsZero() {
 		snapshot.UpdatedAt = observedAt.Format(time.RFC3339Nano)
 	}
-	s.updateCodexUsageSnapshot(ctx, accountID, snapshot)
+	s.updateCodexUsageSnapshot(ctx, accountID, snapshot, accounts...)
 }
 
 func cloneImageSizeBreakdown(input map[string]int) map[string]int {
