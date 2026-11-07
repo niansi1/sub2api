@@ -735,6 +735,9 @@ func openAICodexWindowObservedAt(extra map[string]any, window string) (time.Time
 }
 
 func openAICodexWindowStaleForPause(extra map[string]any, window string, now time.Time) bool {
+	if _, exists := extra["codex_"+window+"_usage_updated_at"]; !exists {
+		return openAICodexSnapshotStaleForPause(extra, now)
+	}
 	updatedAt, ok := openAICodexWindowObservedAt(extra, window)
 	return ok && now.Sub(updatedAt) >= openAICodexAutoPauseStaleAfter
 }

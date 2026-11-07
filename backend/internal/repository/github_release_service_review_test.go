@@ -55,7 +55,7 @@ func TestDownloadRangeProbeRequiresExactSingleByte(t *testing.T) {
 				}
 				w.Header().Set("Content-Range", tt.contentRange)
 				w.WriteHeader(http.StatusPartialContent)
-				w.(http.Flusher).Flush()
+				flushReviewDownloadResponse(t, w)
 				_, _ = w.Write([]byte(tt.body))
 			}))
 			defer srv.Close()
@@ -113,9 +113,9 @@ func TestDownloadSegmentOnceBoundsWritesForOverlongBody(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Range", "bytes 8-15/32")
 		w.WriteHeader(http.StatusPartialContent)
-		w.(http.Flusher).Flush()
+		flushReviewDownloadResponse(t, w)
 		_, _ = w.Write([]byte("12345678"))
-		w.(http.Flusher).Flush()
+		flushReviewDownloadResponse(t, w)
 		_, _ = w.Write([]byte("EXTRA DATA MUST NOT REACH ADJACENT SEGMENTS"))
 	}))
 	defer srv.Close()
@@ -176,10 +176,10 @@ func TestDownloadFileFallsBackAfterInvalidRangeResponse(t *testing.T) {
 				}
 				w.Header().Set("Content-Range", contentRange)
 				w.WriteHeader(http.StatusPartialContent)
-				w.(http.Flusher).Flush()
+				flushReviewDownloadResponse(t, w)
 				_, _ = w.Write(payload[start : end+1])
 				if failure == "extra body" {
-					w.(http.Flusher).Flush()
+					flushReviewDownloadResponse(t, w)
 					_, _ = w.Write([]byte{0xff})
 				}
 			}))
@@ -196,4 +196,14 @@ func TestDownloadFileFallsBackAfterInvalidRangeResponse(t *testing.T) {
 			require.Equal(t, int32(1), atomic.LoadInt32(&fallbacks), "invalid range response must trigger a whole-file retry")
 		})
 	}
+}
+
+func flushReviewDownloadResponse(t *testing.T, w http.ResponseWriter) {
+	t.Helper()
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		t.Error("test server response must support streaming flushes")
+		return
+	}
+	flusher.Flush()
 }

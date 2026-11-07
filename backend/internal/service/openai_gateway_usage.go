@@ -1138,13 +1138,15 @@ func buildCodexUsageExtraUpdates(snapshot *OpenAICodexUsageSnapshot, fallbackNow
 // addCodexWindowExtraUpdates keeps each quota window's sample and reset identity
 // together. JSON null is intentional: UpdateExtra atomically merges JSONB maps.
 func addCodexWindowExtraUpdates(updates map[string]any, window string, used *float64, resetSeconds, windowMinutes *int, observedAt time.Time) {
-	prefix := "codex_" + window + "_"
-	if used != nil {
-		updates[prefix+"used_percent"] = *used
-		updates[prefix+"usage_updated_at"] = observedAt.Format(time.RFC3339Nano)
-		updates[prefix+"reset_after_seconds"] = nil
-		updates[prefix+"reset_at"] = nil
+	// Reset metadata without a usage sample must not resurrect a stale value.
+	if used == nil {
+		return
 	}
+	prefix := "codex_" + window + "_"
+	updates[prefix+"used_percent"] = *used
+	updates[prefix+"usage_updated_at"] = observedAt.Format(time.RFC3339Nano)
+	updates[prefix+"reset_after_seconds"] = nil
+	updates[prefix+"reset_at"] = nil
 	if resetSeconds != nil {
 		updates[prefix+"reset_after_seconds"] = *resetSeconds
 		if resetAt := codexResetAtRFC3339(observedAt, resetSeconds); resetAt != nil {

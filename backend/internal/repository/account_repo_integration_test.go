@@ -1521,6 +1521,8 @@ func (s *AccountRepoSuite) TestUpdateExtra_SchedulerNeutralSkipsOutboxAndSyncsFr
 
 	updates := map[string]any{
 		"codex_usage_updated_at":     "2026-03-11T10:00:00Z",
+		"codex_raw_usage_updated_at": "2026-03-11T10:00:00Z",
+		"codex_5h_usage_updated_at":  "2026-03-11T10:00:00Z",
 		"codex_5h_used_percent":      88.5,
 		"session_window_utilization": 0.42,
 	}
@@ -1539,6 +1541,16 @@ func (s *AccountRepoSuite) TestUpdateExtra_SchedulerNeutralSkipsOutboxAndSyncsFr
 	s.Require().NotNil(cacheRecorder.accounts[account.ID])
 	s.Require().Equal(service.StatusActive, cacheRecorder.accounts[account.ID].Status)
 	s.Require().Equal("2026-03-11T10:00:00Z", cacheRecorder.accounts[account.ID].Extra["codex_usage_updated_at"])
+	s.Require().Equal("2026-03-11T10:00:00Z", cacheRecorder.accounts[account.ID].Extra["codex_raw_usage_updated_at"])
+	// A raw-only response stays observational and synchronizes only this account.
+	s.Require().NoError(s.repo.UpdateExtra(s.ctx, account.ID, map[string]any{
+		"codex_raw_usage_updated_at": "2026-03-11T10:01:00Z",
+	}))
+	s.Require().NoError(scanSingleRow(s.ctx, s.repo.sql, "SELECT COUNT(*) FROM scheduler_outbox", nil, &outboxCount))
+	s.Require().Zero(outboxCount)
+	s.Require().Len(cacheRecorder.setAccounts, 2)
+	s.Require().Equal("2026-03-11T10:01:00Z", cacheRecorder.accounts[account.ID].Extra["codex_raw_usage_updated_at"])
+	s.Require().Equal("2026-03-11T10:00:00Z", cacheRecorder.accounts[account.ID].Extra["codex_5h_usage_updated_at"])
 }
 
 // Exercise the complete UpdateExtra -> PostgreSQL -> Redis metadata -> admission

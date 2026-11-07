@@ -113,7 +113,9 @@ func TestBuildCodexUsageExtraUpdates_UsesSnapshotUpdatedAt(t *testing.T) {
 
 func TestBuildCodexUsageExtraUpdates_PreservesObservationNanoseconds(t *testing.T) {
 	snapshot := &OpenAICodexUsageSnapshot{
-		UpdatedAt: "2026-02-16T10:00:00.123456789Z",
+		PrimaryUsedPercent:   float64Ptr(95),
+		PrimaryWindowMinutes: intPtr(300),
+		UpdatedAt:            "2026-02-16T10:00:00.123456789Z",
 	}
 	want := time.Date(2026, 2, 16, 10, 0, 0, 123456789, time.UTC).UnixNano()
 
@@ -361,4 +363,22 @@ func TestBuildCodexUsageExtraUpdates_WithoutNormalizedWindowFields(t *testing.T)
 	}
 	require.Contains(t, updates, "codex_7d_reset_at")
 	require.Nil(t, updates["codex_7d_reset_at"], "a fresh used-only observation must clear the old reset")
+}
+
+func TestBuildCodexUsageExtraUpdates_RawOnlyDoesNotAdvanceCanonicalClock(t *testing.T) {
+	const observed = "2026-02-16T10:00:00.123456789Z"
+	for name, snapshot := range map[string]*OpenAICodexUsageSnapshot{
+		"timestamp only":      {UpdatedAt: observed},
+		"image quota":         {UpdatedAt: observed, PrimaryUsedPercent: float64Ptr(1), PrimaryWindowMinutes: intPtr(1440)},
+		"reset without usage": {UpdatedAt: observed, PrimaryResetAfterSeconds: intPtr(3600), PrimaryWindowMinutes: intPtr(300)},
+	} {
+		t.Run(name, func(t *testing.T) {
+			updates := buildCodexUsageExtraUpdates(snapshot, time.Time{})
+			require.Equal(t, observed, updates["codex_raw_usage_updated_at"])
+			for _, key := range []string{"codex_usage_updated_at", OpenAICodexUsageObservedAtUnixNanoExtraKey,
+				"codex_5h_usage_updated_at", "codex_7d_usage_updated_at", "codex_5h_reset_at", "codex_7d_reset_at"} {
+				require.NotContains(t, updates, key, "metadata-only observations must not refresh canonical usage")
+			}
+		})
+	}
 }
