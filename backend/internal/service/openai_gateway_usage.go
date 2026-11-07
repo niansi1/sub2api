@@ -19,6 +19,10 @@ import (
 	"go.uber.org/zap"
 )
 
+// OpenAICodexUsageObservedAtUnixNanoExtraKey orders concurrent quota snapshot
+// writes across gateway instances so an older observation cannot win last.
+const OpenAICodexUsageObservedAtUnixNanoExtraKey = "codex_usage_observed_at_unix_nano"
+
 // OpenAIRecordUsageInput input for recording usage
 type OpenAIRecordUsageInput struct {
 	Result             *OpenAIForwardResult
@@ -562,7 +566,7 @@ func openAILongContextBillingGate(account *Account) *bool {
 }
 
 // openAISubscriptionLongContextExempt 按实际凭据和最终发送模型判断订阅豁免。
-// GPT-6.1 Sol 的订阅请求不再收取模型长上下文附加费；API Key 仍使用 API 价卡。
+// GPT-6.1 Sol / Terra 的订阅请求不再收取模型长上下文附加费；API Key 仍使用 API 价卡。
 // 使用发送模型，避免客户别名、渠道计费模型或响应模型计费切换改变上游订阅规则。
 func openAISubscriptionLongContextExempt(account *Account, result *OpenAIForwardResult) bool {
 	if !account.IsOpenAIOAuthLike() || result == nil {
@@ -572,7 +576,7 @@ func openAISubscriptionLongContextExempt(account *Account, result *OpenAIForward
 	if model == "" {
 		model = result.Model
 	}
-	return openai.IsGPT61SolModelSpelling(model)
+	return openai.IsGPT61SolModelSpelling(model) || openai.IsGPT61TerraModelSpelling(model)
 }
 
 func (s *OpenAIGatewayService) calculateOpenAIRecordUsageCost(
@@ -1050,7 +1054,7 @@ func ParseCodexRateLimitHeaders(headers http.Header) *OpenAICodexUsageSnapshot {
 		return nil
 	}
 
-	snapshot.UpdatedAt = time.Now().Format(time.RFC3339)
+	snapshot.UpdatedAt = time.Now().Format(time.RFC3339Nano)
 	return snapshot
 }
 
@@ -1111,9 +1115,12 @@ func buildCodexUsageExtraUpdates(snapshot *OpenAICodexUsageSnapshot, fallbackNow
 		updates["codex_primary_over_secondary_percent"] = *snapshot.PrimaryOverSecondaryPercent
 	}
 	updates["codex_usage_updated_at"] = baseTime.Format(time.RFC3339)
+	if !baseTime.IsZero() {
+		updates[OpenAICodexUsageObservedAtUnixNanoExtraKey] = baseTime.UnixNano()
+	}
 
-	// 归一化到 5h/7d 规范字段
-	if normalized := snapshot.Normalize(); normalized != nil {
+	// 归一化到 5h/7d 规范字段；非 5h/周级的窗口（如生图 24h 额度）只保留上面的原始字段
+	if normalized := snapshot.normalizeCanonical(); normalized != nil {
 		if normalized.Used5hPercent != nil {
 			updates["codex_5h_used_percent"] = *normalized.Used5hPercent
 		}
@@ -1143,6 +1150,46 @@ func buildCodexUsageExtraUpdates(snapshot *OpenAICodexUsageSnapshot, fallbackNow
 	return updates
 }
 
+// codexSnapshotNearLimit reports whether a snapshot about to be persisted
+// shows 5h or 7d usage in the range where scheduling auto-pause thresholds
+// operate. Such snapshots bypass the persist throttle so the scheduler sees
+// the crossing as soon as the first request past the line completes, instead
+// of up to one throttle interval (30s) later — by which time a fast burn can
+// already have exhausted the window.
+func codexSnapshotNearLimit(updates map[string]any, bypassPercent float64) bool {
+	if bypassPercent <= 0 {
+		bypassPercent = openAICodexSnapshotNearLimitPercent
+	}
+	for _, key := range []string{"codex_5h_used_percent", "codex_7d_used_percent"} {
+		// resolveAccountExtraNumber tolerates every numeric shape the JSON round
+		// trip may produce; a bare float64 assertion would silently disable the
+		// bypass if the field ever changes type.
+		if v, ok := resolveAccountExtraNumber(updates, key); ok && v >= bypassPercent {
+			return true
+		}
+	}
+	return false
+}
+
+// codexSnapshotBypassPercent returns the utilization at which snapshot writes
+// stop being throttled. It tracks the configured OpenAI scheduling threshold so
+// an admin who pauses accounts below the built-in 90% still has the crossing
+// detected on the first request past the line, while 100 (auto-pause disabled)
+// keeps the historical 90% default.
+func (s *OpenAIGatewayService) codexSnapshotBypassPercent(ctx context.Context) float64 {
+	if s == nil || s.settingService == nil {
+		return openAICodexSnapshotNearLimitPercent
+	}
+	threshold, ok := s.settingService.GetAccountSchedulingThresholds(ctx)[PlatformOpenAI]
+	if !ok || threshold <= 0 || threshold >= 100 {
+		return openAICodexSnapshotNearLimitPercent
+	}
+	if candidate := float64(threshold); candidate < openAICodexSnapshotNearLimitPercent {
+		return candidate
+	}
+	return openAICodexSnapshotNearLimitPercent
+}
+
 // updateCodexUsageSnapshot saves the Codex usage snapshot to account's Extra field
 // updateCodexUsageSnapshot 把 /responses 的 x-codex-* 全局头快照写入账号 codex_* Extra。
 // ⚠️ 调用方必须排除 spark 影子账号(account.IsShadow()):影子的 codex_* 仅由 QueryUsage
@@ -1161,7 +1208,7 @@ func (s *OpenAIGatewayService) updateCodexUsageSnapshot(ctx context.Context, acc
 	if len(updates) == 0 {
 		return
 	}
-	if !s.getCodexSnapshotThrottle().Allow(accountID, now) {
+	if !codexSnapshotNearLimit(updates, s.codexSnapshotBypassPercent(ctx)) && !s.getCodexSnapshotThrottle().Allow(accountID, now) {
 		return
 	}
 
@@ -1175,12 +1222,24 @@ func (s *OpenAIGatewayService) updateCodexUsageSnapshot(ctx context.Context, acc
 }
 
 func (s *OpenAIGatewayService) UpdateCodexUsageSnapshotFromHeaders(ctx context.Context, accountID int64, headers http.Header) {
+	s.UpdateCodexUsageSnapshotFromHeadersAt(ctx, accountID, headers, time.Time{})
+}
+
+// UpdateCodexUsageSnapshotFromHeadersAt 与 UpdateCodexUsageSnapshotFromHeaders 相同，
+// 但允许调用方声明响应头的真实观测时刻。observedAt 为零值时按"当前"处理。
+// WebSocket 路径必须传入握手时刻，因为池化连接会复用同一份握手响应头。
+func (s *OpenAIGatewayService) UpdateCodexUsageSnapshotFromHeadersAt(ctx context.Context, accountID int64, headers http.Header, observedAt time.Time) {
 	if accountID <= 0 || headers == nil {
 		return
 	}
-	if snapshot := ParseCodexRateLimitHeaders(headers); snapshot != nil {
-		s.updateCodexUsageSnapshot(ctx, accountID, snapshot)
+	snapshot := ParseCodexRateLimitHeaders(headers)
+	if snapshot == nil {
+		return
 	}
+	if !observedAt.IsZero() {
+		snapshot.UpdatedAt = observedAt.Format(time.RFC3339Nano)
+	}
+	s.updateCodexUsageSnapshot(ctx, accountID, snapshot)
 }
 
 func cloneImageSizeBreakdown(input map[string]int) map[string]int {

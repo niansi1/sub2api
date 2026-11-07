@@ -49,6 +49,7 @@ type AdminHandlers struct {
 type Handlers struct {
 	Auth             *AuthHandler
 	User             *UserHandler
+	MCPOAuth         *MCPOAuthHandler
 	APIKey           *APIKeyHandler
 	Usage            *UsageHandler
 	Redeem           *RedeemHandler
@@ -72,6 +73,9 @@ type Handlers struct {
 
 // BuildInfo contains build-time information
 type BuildInfo struct {
-	Version   string
+	Version string
+	// Commit is the VCS revision the binary was built from; empty when the
+	// build did not inject it, in which case the UI hides the commit line.
+	Commit    string
 	BuildType string // "source" for manual builds, "release" for CI builds
 }

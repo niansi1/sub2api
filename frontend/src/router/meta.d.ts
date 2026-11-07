@@ -62,6 +62,36 @@ declare module 'vue-router' {
     requiresSubscription?: boolean
 
     /**
+     * 是否要求兑换码功能开关（redeem_enabled，opt-out）未被显式关闭
+     * @default false
+     */
+    requiresRedeem?: boolean
+
+    /**
+     * 是否要求优惠码功能开关（promo_code_enabled，opt-out）未被显式关闭
+     * @default false
+     */
+    requiresPromoCode?: boolean
+
+    /**
+     * 是否要求邀请返利功能开关（affiliate_enabled，opt-in）已被显式开启
+     * @default false
+     */
+    requiresAffiliate?: boolean
+
+    /**
+     * 是否要求可用渠道功能开关（available_channels_enabled，opt-in）已被显式开启
+     * @default false
+     */
+    requiresAvailableChannels?: boolean
+
+    /**
+     * 是否要求渠道监控功能开关（channel_monitor_enabled，opt-out）未被显式关闭
+     * @default false
+     */
+    requiresChannelMonitor?: boolean
+
+    /**
      * i18n key for the page title
      */
     titleKey?: string

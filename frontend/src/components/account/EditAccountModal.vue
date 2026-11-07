@@ -2243,6 +2243,14 @@
         </button>
       </div>
 
+      <!-- OpenAI images: size tier routing -->
+      <div
+        v-if="account?.platform === 'openai'"
+        class="border-t border-gray-200 pt-4 dark:border-dark-600"
+      >
+        <OpenAIImageSizeTiersField v-model="openAIImageSizeTiers" />
+      </div>
+
       <div
         v-if="account?.type === 'apikey'"
         class="flex items-center justify-between gap-4 border-t border-gray-200 pt-4 dark:border-dark-600"
@@ -2826,6 +2834,9 @@
           <button
             type="button"
             data-testid="auto-reset-credit-enabled"
+            role="switch"
+            :aria-checked="autoResetCreditEnabled"
+            :aria-label="t('admin.accounts.autoResetCredit.title')"
             @click="autoResetCreditEnabled = !autoResetCreditEnabled"
             :class="[
               'relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2',
@@ -2842,33 +2853,105 @@
         </div>
         <div class="grid gap-4 sm:grid-cols-2">
           <div>
-            <label class="input-label">{{ t('admin.accounts.autoResetCredit.threshold5h') }}</label>
+            <label class="input-label flex cursor-pointer items-center gap-2">
+              <input
+                v-model="autoResetCredit5hEnabled"
+                type="checkbox"
+                class="h-4 w-4 shrink-0 rounded border-gray-300 text-primary-500 focus:ring-primary-500 dark:border-dark-500 disabled:cursor-not-allowed disabled:opacity-50"
+                :disabled="!autoResetCreditEnabled"
+                data-testid="auto-reset-credit-5h-enabled"
+              />
+              <span id="auto-reset-credit-5h-label">{{ t('admin.accounts.autoResetCredit.threshold5h') }}</span>
+            </label>
             <input
+              id="auto-reset-credit-5h-threshold"
+              aria-labelledby="auto-reset-credit-5h-label"
               v-model.number="autoResetCredit5hThreshold"
               type="number"
               min="0.1"
               max="100"
               step="0.1"
               class="input"
-              :disabled="!autoResetCreditEnabled"
+              :disabled="!autoResetCreditEnabled || !autoResetCredit5hEnabled"
               data-testid="auto-reset-credit-5h-threshold"
             />
           </div>
           <div>
-            <label class="input-label">{{ t('admin.accounts.autoResetCredit.threshold7d') }}</label>
+            <label class="input-label flex cursor-pointer items-center gap-2">
+              <input
+                v-model="autoResetCredit7dEnabled"
+                type="checkbox"
+                class="h-4 w-4 shrink-0 rounded border-gray-300 text-primary-500 focus:ring-primary-500 dark:border-dark-500 disabled:cursor-not-allowed disabled:opacity-50"
+                :disabled="!autoResetCreditEnabled"
+                data-testid="auto-reset-credit-7d-enabled"
+              />
+              <span id="auto-reset-credit-7d-label">{{ t('admin.accounts.autoResetCredit.threshold7d') }}</span>
+            </label>
             <input
+              id="auto-reset-credit-7d-threshold"
+              aria-labelledby="auto-reset-credit-7d-label"
               v-model.number="autoResetCredit7dThreshold"
               type="number"
               min="0.1"
               max="100"
               step="0.1"
               class="input"
-              :disabled="!autoResetCreditEnabled"
+              :disabled="!autoResetCreditEnabled || !autoResetCredit7dEnabled"
               data-testid="auto-reset-credit-7d-threshold"
             />
           </div>
         </div>
         <p class="input-hint">{{ t('admin.accounts.autoResetCredit.thresholdHint') }}</p>
+        <div>
+          <label class="input-label flex cursor-pointer items-center gap-2">
+            <input
+              v-model="autoResetCreditExpiryEnabled"
+              type="checkbox"
+              class="h-4 w-4 shrink-0 rounded border-gray-300 text-primary-500 focus:ring-primary-500 dark:border-dark-500 disabled:cursor-not-allowed disabled:opacity-50"
+              :disabled="!autoResetCreditEnabled"
+              data-testid="auto-reset-credit-expiry-enabled"
+            />
+            {{ t('admin.accounts.autoResetCredit.enableExpiry') }}
+          </label>
+          <div class="grid grid-cols-2 gap-3">
+            <div>
+              <label for="auto-reset-credit-expiry-value" class="input-label">{{ t('admin.accounts.autoResetCredit.expiryLeadTime') }}</label>
+              <input id="auto-reset-credit-expiry-value" v-model.number="autoResetCreditExpiryValue" type="number" min="1" :max="Math.floor(525600 / autoResetCreditExpiryUnit)" step="1" class="input" :disabled="!autoResetCreditEnabled || !autoResetCreditExpiryEnabled" data-testid="auto-reset-credit-expiry-value" />
+            </div>
+            <div>
+              <label for="auto-reset-credit-expiry-unit" class="input-label">{{ t('admin.accounts.autoResetCredit.expiryUnit') }}</label>
+              <select id="auto-reset-credit-expiry-unit" v-model.number="autoResetCreditExpiryUnit" class="input" :disabled="!autoResetCreditEnabled || !autoResetCreditExpiryEnabled" data-testid="auto-reset-credit-expiry-unit">
+                <option :value="1">{{ t('admin.accounts.autoResetCredit.minutes') }}</option>
+                <option :value="60">{{ t('admin.accounts.autoResetCredit.hours') }}</option>
+                <option :value="1440">{{ t('admin.accounts.autoResetCredit.days') }}</option>
+              </select>
+            </div>
+          </div>
+          <p class="input-hint">{{ t('admin.accounts.autoResetCredit.expiryHint') }}</p>
+          <div
+            v-if="autoResetCreditEnabled && autoResetCreditExpiryEnabled"
+            class="mt-2 space-y-1 rounded-lg bg-gray-50 p-3 text-sm dark:bg-dark-800"
+            aria-live="polite"
+            data-testid="auto-reset-credit-expiry-preview"
+          >
+            <p v-if="!validAutoResetExpiry()" class="input-hint">{{ t('admin.accounts.autoResetCredit.expiryInvalid') }}</p>
+            <template v-else-if="autoResetCreditExpiryPreview">
+              <p v-if="autoResetCreditExpiryPreview.triggerAt.getTime() <= autoResetCreditPreviewNow" class="font-medium">
+                {{ t('admin.accounts.autoResetCredit.expiryPreviewDue') }}
+              </p>
+              <p v-else class="font-medium">
+                {{ t('admin.accounts.autoResetCredit.expiryPreviewAt') }}
+                <time :datetime="autoResetCreditExpiryPreview.triggerAt.toISOString()" data-testid="auto-reset-credit-trigger-at">{{ formatDateTimeToMinute(autoResetCreditExpiryPreview.triggerAt) }}</time>
+              </p>
+              <p class="input-hint">
+                {{ t('admin.accounts.autoResetCredit.expiryPreviewExpiresAt') }}
+                <time :datetime="autoResetCreditExpiryPreview.expiresAt.toISOString()">{{ formatDateTimeToMinute(autoResetCreditExpiryPreview.expiresAt) }}</time>
+              </p>
+              <p class="input-hint">{{ t('admin.accounts.autoResetCredit.expiryPreviewHint', { timezone: getBrowserTimeZone() }) }}</p>
+            </template>
+            <p v-else class="input-hint">{{ t('admin.accounts.autoResetCredit.expiryPreviewUnavailable') }}</p>
+          </div>
+        </div>
       </div>
 
       <!-- 配额控制 (Anthropic OAuth/SetupToken: 亲和 + 窗口费用 + 会话 + RPM 等) -->
@@ -3381,6 +3464,7 @@
 <script setup lang="ts">
 import { ref, reactive, computed, watch, nextTick, onBeforeUnmount, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { useIntervalFn } from '@vueuse/core'
 import { useAppStore } from '@/stores/app'
 
 import { adminAPI } from '@/api/admin'
@@ -3407,6 +3491,13 @@ import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
 import Select from '@/components/common/Select.vue'
 import HelpTooltip from '@/components/common/HelpTooltip.vue'
 import UpstreamRequestIdHeaderField from '@/components/account/UpstreamRequestIdHeaderField.vue'
+import OpenAIImageSizeTiersField from '@/components/account/OpenAIImageSizeTiersField.vue'
+import {
+  OPENAI_IMAGE_SIZE_TIERS,
+  applyOpenAIImageSizeTiersToExtra,
+  readOpenAIImageSizeTiers,
+  type OpenAIImageSizeTier
+} from '@/components/account/openaiImageSizeTiers'
 import Toggle from '@/components/common/Toggle.vue'
 import Icon from '@/components/icons/Icon.vue'
 import ProxySelector from '@/components/common/ProxySelector.vue'
@@ -3464,6 +3555,7 @@ import {
 } from '@/components/account/credentialsBuilder'
 import {
   formatDateTime,
+  formatDateTimeToMinute,
   formatDateTimeLocalInput,
   getBrowserTimeZone,
   parseDateTimeLocalInput
@@ -4078,8 +4170,48 @@ const autoPause7dThreshold = ref<number | null>(null)
 const autoPause5hDisabled = ref(false)
 const autoPause7dDisabled = ref(false)
 const autoResetCreditEnabled = ref(false)
+const autoResetCredit5hEnabled = ref(true)
+const autoResetCredit7dEnabled = ref(true)
 const autoResetCredit5hThreshold = ref(100)
 const autoResetCredit7dThreshold = ref(100)
+const autoResetCreditExpiryEnabled = ref(false)
+const autoResetCreditExpiryValue = ref(1)
+const autoResetCreditExpiryUnit = ref(60)
+const autoResetCreditExpiryMinutes = computed(() => autoResetCreditExpiryValue.value * autoResetCreditExpiryUnit.value)
+const validAutoResetThreshold = (value: number) => Number.isFinite(value) && value >= 0.1 && value <= 100
+const validAutoResetExpiry = () => Number.isInteger(autoResetCreditExpiryValue.value) &&
+  [1, 60, 1440].includes(autoResetCreditExpiryUnit.value) &&
+  autoResetCreditExpiryMinutes.value >= 1 && autoResetCreditExpiryMinutes.value <= 525600
+const autoResetCreditPreviewNow = ref(Date.now())
+const { pause: pauseAutoResetPreview, resume: resumeAutoResetPreview } = useIntervalFn(
+  () => { autoResetCreditPreviewNow.value = Date.now() }, 60_000, { immediate: false }
+)
+watch(() => props.show && autoResetCreditEnabled.value && autoResetCreditExpiryEnabled.value, (visible) => {
+  autoResetCreditPreviewNow.value = Date.now()
+  if (visible) resumeAutoResetPreview()
+  else pauseAutoResetPreview()
+}, { immediate: true })
+const autoResetCreditExpiryPreview = computed(() => {
+  if (!validAutoResetExpiry()) return null
+  const snapshot = props.account?.extra?.codex_reset_credit_snapshot
+  const available = snapshot?.available_count
+  if (available == null || !Number.isInteger(available) || available <= 0 ||
+    !Array.isArray(snapshot?.credits) || snapshot.credits.length < available) return null
+  let earliest = Infinity
+  for (const credit of snapshot.credits) {
+    const raw = credit?.expires_at
+    // Incomplete card details cannot predict the backend's safe consumption decision.
+    if (typeof raw !== 'string' || !/^\d{4}-\d{2}-\d{2}T([01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/.test(raw)) return null
+    const expiresAt = Date.parse(raw)
+    if (!Number.isFinite(expiresAt) || new Date(raw.slice(0, 10)).toISOString().slice(0, 10) !== raw.slice(0, 10)) return null
+    if (expiresAt > autoResetCreditPreviewNow.value) earliest = Math.min(earliest, expiresAt)
+  }
+  if (!Number.isFinite(earliest)) return null
+  return {
+    expiresAt: new Date(earliest),
+    triggerAt: new Date(earliest - autoResetCreditExpiryMinutes.value * 60_000)
+  }
+})
 const upstreamBillingAutoProbeEnabled = ref(false)
 const upstreamBillingRateSyncEnabled = ref(false)
 const mixedScheduling = ref(false) // For antigravity accounts: enable mixed scheduling
@@ -4154,6 +4286,7 @@ const openAICompactMode = ref<OpenAICompactMode>('auto')
 const openAIResponsesMode = ref<OpenAIResponsesMode>('auto')
 // Images 非流式响应缺 b64_json 时由网关下载 url 回填（仅 OpenAI API Key）。
 const openAIImagesUrlToB64JsonEnabled = ref(false)
+const openAIImageSizeTiers = ref<OpenAIImageSizeTier[]>([...OPENAI_IMAGE_SIZE_TIERS])
 const openAIEndpointCapabilities = ref<OpenAIEndpointCapability[]>(['chat_completions', 'embeddings'])
 const openaiOAuthResponsesWebSocketV2Mode = ref<OpenAIWSMode>(OPENAI_WS_MODE_OFF)
 const openaiAPIKeyResponsesWebSocketV2Mode = ref<OpenAIWSMode>(OPENAI_WS_MODE_OFF)
@@ -4630,11 +4763,18 @@ const syncFormFromAccount = (newAccount: Account | null) => {
 	allowOverages.value = extra?.allow_overages === true
 	upstreamRequestIdHeader.value = readUpstreamRequestIdHeader(extra)
 	openAIImagesUrlToB64JsonEnabled.value = extra?.images_url_to_b64_json === true
+	openAIImageSizeTiers.value = readOpenAIImageSizeTiers(extra)
 	autoPause5hThreshold.value = typeof extra?.auto_pause_5h_threshold === 'number' ? extra.auto_pause_5h_threshold * 100 : null
 	autoPause7dThreshold.value = typeof extra?.auto_pause_7d_threshold === 'number' ? extra.auto_pause_7d_threshold * 100 : null
 	autoPause5hDisabled.value = extra?.auto_pause_5h_disabled === true
 	autoPause7dDisabled.value = extra?.auto_pause_7d_disabled === true
 	autoResetCreditEnabled.value = extra?.auto_reset_credit_enabled === true
+	autoResetCredit5hEnabled.value = extra?.auto_reset_credit_5h_disabled !== true
+	autoResetCredit7dEnabled.value = extra?.auto_reset_credit_7d_disabled !== true
+	autoResetCreditExpiryEnabled.value = extra?.auto_reset_credit_expiry_enabled === true
+	const expiryMinutes = typeof extra?.auto_reset_credit_expiry_minutes === 'number' ? extra.auto_reset_credit_expiry_minutes : 60
+	autoResetCreditExpiryUnit.value = expiryMinutes > 0 && expiryMinutes % 1440 === 0 ? 1440 : expiryMinutes > 0 && expiryMinutes % 60 === 0 ? 60 : 1
+	autoResetCreditExpiryValue.value = expiryMinutes / autoResetCreditExpiryUnit.value
 	autoResetCredit5hThreshold.value =
 		typeof extra?.auto_reset_credit_5h_threshold === 'number' ? extra.auto_reset_credit_5h_threshold * 100 : 100
 	autoResetCredit7dThreshold.value =
@@ -5633,9 +5773,13 @@ const handleSubmit = async () => {
     return
   }
 	if (autoResetCreditEnabled.value) {
-		const thresholds = [autoResetCredit5hThreshold.value, autoResetCredit7dThreshold.value]
-		if (thresholds.some((value) => !Number.isFinite(value) || value < 0.1 || value > 100)) {
+		if ((autoResetCredit5hEnabled.value && !validAutoResetThreshold(autoResetCredit5hThreshold.value)) ||
+      (autoResetCredit7dEnabled.value && !validAutoResetThreshold(autoResetCredit7dThreshold.value))) {
 			appStore.showError(t('admin.accounts.autoResetCredit.thresholdInvalid'))
+			return
+		}
+		if (autoResetCreditExpiryEnabled.value && !validAutoResetExpiry()) {
+			appStore.showError(t('admin.accounts.autoResetCredit.expiryInvalid'))
 			return
 		}
 	}
@@ -6242,6 +6386,7 @@ const handleSubmit = async () => {
           newExtra.web_search_emulation = webSearchEmulationMode.value
         }
 		}
+		applyOpenAIImageSizeTiersToExtra(newExtra, openAIImageSizeTiers.value)
 		if (autoPause5hThreshold.value != null && autoPause5hThreshold.value > 0) {
 			newExtra.auto_pause_5h_threshold = autoPause5hThreshold.value / 100
 		} else {
@@ -6264,8 +6409,12 @@ const handleSubmit = async () => {
 		}
 		if (props.account.type === 'oauth' && !isSparkShadow.value) {
 			newExtra.auto_reset_credit_enabled = autoResetCreditEnabled.value
-			newExtra.auto_reset_credit_5h_threshold = autoResetCredit5hThreshold.value / 100
-			newExtra.auto_reset_credit_7d_threshold = autoResetCredit7dThreshold.value / 100
+			newExtra.auto_reset_credit_5h_disabled = !autoResetCredit5hEnabled.value
+			newExtra.auto_reset_credit_7d_disabled = !autoResetCredit7dEnabled.value
+			newExtra.auto_reset_credit_5h_threshold = validAutoResetThreshold(autoResetCredit5hThreshold.value) ? autoResetCredit5hThreshold.value / 100 : 1
+			newExtra.auto_reset_credit_7d_threshold = validAutoResetThreshold(autoResetCredit7dThreshold.value) ? autoResetCredit7dThreshold.value / 100 : 1
+			newExtra.auto_reset_credit_expiry_enabled = autoResetCreditExpiryEnabled.value
+			newExtra.auto_reset_credit_expiry_minutes = validAutoResetExpiry() ? autoResetCreditExpiryMinutes.value : 60
 		}
 		// 运行态只允许后端服务更新，账号编辑不得回写旧状态。
 		delete newExtra.codex_auto_reset_credit_state

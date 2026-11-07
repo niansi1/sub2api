@@ -870,6 +870,8 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 	var upstreamConn openAIWSClientConn
 	statusCode := 0
 	var handshakeHeaders http.Header
+	// 握手响应头的产生时刻：池化连接复用时会重放，落库快照必须锚定它而非 time.Now()。
+	var handshakeObservedAt time.Time
 	for {
 		headers, err = s.refreshOpenAIAgentIdentityHeaders(ctx, account, headers)
 		if err != nil {
@@ -879,6 +881,7 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 		upstreamConn, statusCode, handshakeHeaders, err = dialer.Dial(dialCtx, wsURL, headers, proxyURL)
 		cancelDial()
 		if err == nil {
+			handshakeObservedAt = time.Now()
 			break
 		}
 		var handshakeErr *openAIWSHandshakeError
@@ -1225,6 +1228,7 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 					OpenAIWSMode:                  true,
 					UpstreamTerminalEvent:         normalizeOpenAIWSTerminalEvent(turn.TerminalEventType),
 					ResponseHeaders:               cloneHeader(handshakeHeaders),
+					ResponseHeadersObservedAt:     handshakeObservedAt,
 					Duration:                      turn.Duration,
 					FirstTokenMs:                  turn.FirstTokenMs,
 				}
@@ -1367,6 +1371,7 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 		OpenAIWSMode:                  true,
 		UpstreamTerminalEvent:         normalizeOpenAIWSTerminalEvent(relayResult.TerminalEventType),
 		ResponseHeaders:               cloneHeader(handshakeHeaders),
+		ResponseHeadersObservedAt:     handshakeObservedAt,
 		Duration:                      relayResult.Duration,
 		FirstTokenMs:                  relayResult.FirstTokenMs,
 	}

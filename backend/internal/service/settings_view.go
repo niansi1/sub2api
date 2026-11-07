@@ -17,6 +17,7 @@ type SystemSettings struct {
 	RegistrationEmailSuffixWhitelist    []string
 	RegistrationEmailDomainQuotaEnabled bool // 白名单非空时放行非白名单域名限量注册（默认关闭）
 	PromoCodeEnabled                    bool
+	RedeemEnabled                       bool
 	PasswordResetEnabled                bool
 	FrontendURL                         string
 	InvitationCodeEnabled               bool
@@ -333,6 +334,7 @@ type PublicSettings struct {
 	RegistrationEmailSuffixWhitelist    []string
 	RegistrationEmailDomainQuotaEnabled bool
 	PromoCodeEnabled                    bool
+	RedeemEnabled                       bool
 	PasswordResetEnabled                bool
 	InvitationCodeEnabled               bool
 	TotpEnabled                         bool // TOTP 双因素认证
@@ -375,6 +377,7 @@ type PublicSettings struct {
 	WeChatOAuthMPEnabled     bool
 	WeChatOAuthMobileEnabled bool
 	BackendModeEnabled       bool
+	MCPEnabled               bool // 由部署配置 MCP_PUBLIC_URL 决定，不可在后台修改
 	PaymentEnabled           bool
 	PaymentBalanceDisabled   bool
 	OIDCOAuthEnabled         bool

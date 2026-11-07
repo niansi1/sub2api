@@ -65,11 +65,12 @@ var schedulerNeutralExtraKeyPrefixes = []string{
 }
 
 var schedulerNeutralExtraKeys = map[string]struct{}{
-	"codex_usage_updated_at":     {},
-	"codex_credits_snapshot":     {},
-	"codex_referral_snapshot":    {},
-	"grok_billing_snapshot":      {},
-	"session_window_utilization": {},
+	"codex_usage_updated_at":                           {},
+	service.OpenAICodexUsageObservedAtUnixNanoExtraKey: {},
+	"codex_credits_snapshot":                           {},
+	"codex_referral_snapshot":                          {},
+	"grok_billing_snapshot":                            {},
+	"session_window_utilization":                       {},
 }
 
 const postgresParameterBatchSize = 50000
@@ -1969,7 +1970,7 @@ func (r *accountRepository) BindGroups(ctx context.Context, accountID int64, gro
 	if scoped := r.accountTransactionScope(ctx); scoped != r {
 		return scoped.BindGroups(ctx, accountID, groupIDs)
 	}
-	if adminaccess.FromContext(ctx) != nil {
+	if adminaccess.RestrictedFromContext(ctx) != nil {
 		return r.scopedAdminBindGroups(ctx, accountID, groupIDs)
 	}
 	existingGroupIDs, err := r.loadAccountGroupIDs(ctx, accountID)
@@ -2828,10 +2829,21 @@ func (r *accountRepository) UpdateExtra(ctx context.Context, id int64, updates m
 	if service.ShouldEnsureCodexFingerprintSeedForExtraUpdates(updates) {
 		extraExpression = ensureCodexFingerprintSeedSQL(extraExpression)
 	}
+	// Codex quota snapshots arrive from several request paths and can be written
+	// out of order. Stamp each write with the observation time it carries and
+	// refuse to let an older observation overwrite a newer one, otherwise a late
+	// 94% write can hide an already-observed 95% and the scheduling threshold
+	// never fires.
+	args := []any{string(payload), id}
+	if observedAt, ok := updates[service.OpenAICodexUsageObservedAtUnixNanoExtraKey].(int64); ok && observedAt > 0 {
+		key := service.OpenAICodexUsageObservedAtUnixNanoExtraKey
+		extraExpression = "CASE WHEN COALESCE(CASE WHEN jsonb_typeof(COALESCE(extra, '{}'::jsonb)->'" + key + "') = 'number' THEN (extra->>'" + key + "')::numeric END, 0) <= $3::numeric THEN " + extraExpression + " ELSE COALESCE(extra, '{}'::jsonb) END"
+		args = append(args, observedAt)
+	}
 	result, err := client.ExecContext(
 		ctx,
 		"UPDATE accounts SET extra = "+extraExpression+", updated_at = NOW() WHERE id = $2 AND deleted_at IS NULL",
-		string(payload), id,
+		args...,
 	)
 
 	if err != nil {

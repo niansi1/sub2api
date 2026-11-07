@@ -134,6 +134,22 @@ export const FeatureFlags = {
     mode: 'opt-in',
     label: 'Affiliate',
   }),
+  redeem: defineFlag({
+    key: 'redeem_enabled',
+    mode: 'opt-out',
+    label: 'Redeem Codes',
+  }),
+  promoCodes: defineFlag({
+    key: 'promo_code_enabled',
+    mode: 'opt-out',
+    label: 'Promo Codes',
+  }),
+  // Read-only: enabled by the deployment's MCP_PUBLIC_URL, not an admin toggle.
+  mcp: defineFlag({
+    key: 'mcp_enabled',
+    mode: 'opt-in',
+    label: 'MCP',
+  }),
 } as const
 
 export type RegisteredFeatureFlag = keyof typeof FeatureFlags

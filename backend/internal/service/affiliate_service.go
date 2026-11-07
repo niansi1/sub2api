@@ -22,6 +22,8 @@ var (
 
 	ErrAffiliateQuotaInsufficient     = infraerrors.BadRequest("AFFILIATE_QUOTA_INSUFFICIENT", "insufficient available affiliate quota")
 	ErrAffiliateWithdrawAmountInvalid = infraerrors.BadRequest("AFFILIATE_WITHDRAW_AMOUNT_INVALID", "invalid offline withdrawal amount")
+	// ErrAffiliateDisabled 在邀请返利功能被管理员关闭时由路由门控返回。
+	ErrAffiliateDisabled = infraerrors.Forbidden("AFFILIATE_DISABLED", "affiliate program is disabled")
 )
 
 const (

@@ -24,6 +24,14 @@ FROM --platform=${BUILDPLATFORM} ${NODE_IMAGE} AS frontend-builder
 ARG NPM_CONFIG_REGISTRY
 
 WORKDIR /app/frontend
+# V8 heap cap for `vite build`. This is a builder-stage build argument, not an
+# ENV: it never reaches the final image and every caller can override it, but
+# the default is kept at the value a normal build needs. `vite build` on the
+# default node heap dies with "JavaScript heap out of memory" whenever the
+# builder is memory-constrained (node sizes its heap from the cgroup limit, not
+# from the host), so leaving it empty makes low-memory builds fail outright.
+# Override with `--build-arg NODE_OPTIONS=` on a builder with plenty of RAM.
+ARG NODE_OPTIONS=--max-old-space-size=3072
 
 # Install pnpm (pinned to v9 to match CI and keep builds reproducible)
 RUN corepack enable && corepack prepare pnpm@9 --activate
@@ -41,7 +49,8 @@ RUN --mount=type=cache,id=sub2api-pnpm-store,target=/root/.local/share/pnpm/stor
 # Copy only that subtree to keep the build dependency minimal.
 COPY frontend/ ./
 COPY docs/legal/ /app/docs/legal/
-RUN pnpm run build
+# NODE_OPTIONS is exported inline so the build arg is what the RUN actually sees.
+RUN NODE_OPTIONS="${NODE_OPTIONS}" pnpm run build
 
 # -----------------------------------------------------------------------------
 # Stage 2: Backend Builder

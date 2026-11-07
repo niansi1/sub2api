@@ -64,6 +64,10 @@ const (
 	codexCLIVersion = "0.146.0"
 	// Codex 限额快照仅用于后台展示/诊断，不需要每个成功请求都立即落库。
 	openAICodexSnapshotPersistMinInterval = 30 * time.Second
+	// 快照用量达到该百分比后不再节流、立即落库：自动暂停阈值就设在这个区间
+	// （如 98%），若最后几个百分点的快照被 30s 节流丢弃，调度永远看不到
+	// 越线信号，阈值形同虚设。仅高用量时旁路，写库压力增量可忽略。
+	openAICodexSnapshotNearLimitPercent = 90.0
 	// 配额自动暂停时，超过该时长仍未刷新的 used% 快照视为陈旧，不再据此暂停账号。
 	// 被暂停的账号收不到流量，其快照永远不会从上游响应头刷新；该兜底让账号在快照
 	// 陈旧时放行一次请求，从而通过正常响应头自愈，而无需等待整个窗口（5h/7d）重置。
@@ -220,6 +224,31 @@ func (s *OpenAICodexUsageSnapshot) Normalize() *NormalizedCodexLimits {
 	return result
 }
 
+// normalizeCanonical 在 Normalize 的基础上，丢弃窗口长度落在 (6h, 1d] 的分类结果，
+// 供账号级 codex_5h_* / codex_7d_* 规范字段的写入与读取使用。
+// 生图响应只带一个 1440 分钟（图片 24h 额度）窗口，按 Normalize 的 ">360 即 7d"
+// 规则会被当成周窗口，覆盖真实周额度并触发整号 7d 自动暂停（#8117）。
+// 429 冷却仍使用 Normalize：那里只需要已耗尽窗口自身的 reset 时间。
+func (s *OpenAICodexUsageSnapshot) normalizeCanonical() *NormalizedCodexLimits {
+	result := s.Normalize()
+	if result == nil {
+		return nil
+	}
+	if isNonCanonicalCodexWindow(result.Window5hMinutes) {
+		result.Used5hPercent, result.Reset5hSeconds, result.Window5hMinutes = nil, nil, nil
+	}
+	if isNonCanonicalCodexWindow(result.Window7dMinutes) {
+		result.Used7dPercent, result.Reset7dSeconds, result.Window7dMinutes = nil, nil, nil
+	}
+	return result
+}
+
+// isNonCanonicalCodexWindow 判断已知窗口长度既不是 5h（<=360 分钟）也不是周级（>1 天）窗口。
+// 窗口长度未知时沿用 Normalize 的推断，保持历史数据兼容。
+func isNonCanonicalCodexWindow(windowMinutes *int) bool {
+	return windowMinutes != nil && *windowMinutes > 360 && *windowMinutes <= 1440
+}
+
 // OpenAIUsage represents OpenAI API response usage
 type OpenAIUsage struct {
 	InputTokens              int `json:"input_tokens"`
@@ -274,10 +303,14 @@ type OpenAIForwardResult struct {
 	// upstream Responses WebSocket turn. Empty preserves legacy/non-WS success.
 	UpstreamTerminalEvent string
 	ResponseHeaders       http.Header
-	Duration              time.Duration
-	FirstTokenMs          *int
-	ClientDisconnect      bool
-	ImageCount            int
+	// ResponseHeadersObservedAt 是上游产生 ResponseHeaders 的时刻。零值表示"当前"。
+	// WebSocket 路径必须填握手时刻：池化连接每轮都会重放同一份握手响应头，
+	// 若按 time.Now() 落库，陈旧配额会被当成新观测写入，导致阈值判定使用过期数据。
+	ResponseHeadersObservedAt time.Time
+	Duration                  time.Duration
+	FirstTokenMs              *int
+	ClientDisconnect          bool
+	ImageCount                int
 	// ImageEndpoint 标记请求来自专用图片端点；分组 image_count_billing 开关
 	// 只对这类请求生效，混合 Responses/Chat/WS 请求仍按 token 计费。
 	ImageEndpoint      bool
@@ -504,8 +537,8 @@ type OpenAIGatewayService struct {
 	responseHeaderFilter                *responseheaders.CompiledHeaderFilter
 	codexSnapshotThrottle               *accountWriteThrottle
 	openAIModelsCache                   openAIModelsCache
-	openaiCompatSessionResponses        sync.Map
-	openaiCompatAnthropicDigestSessions sync.Map
+	openaiCompatSessionResponses        sessionMemoryCache
+	openaiCompatAnthropicDigestSessions sessionMemoryCache
 	// openaiCodexTurnStateOrigins: 下游会话 seed → openAICodexTurnStateOrigin，
 	// 记录最近一次向该会话下发 x-codex-turn-state 的铸造账号，供出站守卫
 	// 剥离跨账号回带（openai_codex_turn_state.go）。
@@ -704,10 +737,15 @@ func (s *OpenAIGatewayService) billingDeps() *billingDeps {
 	}
 }
 
-// CloseOpenAIWSPool 关闭 OpenAI WebSocket 连接池的后台 worker 和空闲连接。
+// CloseOpenAIWSPool 关闭 OpenAI WebSocket 连接池、后台 worker 和会话缓存清理 timer。
 // 应在应用优雅关闭时调用。
 func (s *OpenAIGatewayService) CloseOpenAIWSPool() {
-	if s != nil && s.openaiWSPool != nil {
+	if s == nil {
+		return
+	}
+	s.openaiCompatSessionResponses.Close()
+	s.openaiCompatAnthropicDigestSessions.Close()
+	if s.openaiWSPool != nil {
 		s.openaiWSPool.Close()
 	}
 }

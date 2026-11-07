@@ -92,7 +92,7 @@ jobs:
           version: 9
       - uses: actions/setup-node@v6
         with:
-          node-version: '20'
+          node-version: '24'
           cache: pnpm
           cache-dependency-path: frontend/pnpm-lock.yaml
       - run: pnpm install --frozen-lockfile
@@ -377,7 +377,11 @@ jobs:
 
   sync-version-file:
     needs: [prepare, release]
-    if: ${{ needs.release.result == 'success' && needs.prepare.outputs.dry_run != 'true' }}
+    # Only the upstream repository owns the VERSION file on its default branch.
+    # On a fork, `main` mirrors upstream and must not be rewritten by a release;
+    # pushing here would conflict with the next upstream sync. Fork releases set
+    # the version from the tag inside the build jobs instead.
+    if: ${{ github.repository == 'Wei-Shaw/sub2api' && needs.release.result == 'success' && needs.prepare.outputs.dry_run != 'true' }}
     runs-on: ubuntu-latest
     permissions:
       contents: write

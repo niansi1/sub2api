@@ -13,6 +13,8 @@ export interface ReleaseInfo {
 
 export interface VersionInfo {
   current_version: string
+  /** VCS revision of the running binary; absent for builds that did not inject it */
+  commit?: string
   latest_version: string
   has_update: boolean
   release_info?: ReleaseInfo
@@ -67,7 +69,10 @@ export async function getRollbackVersions(): Promise<{ versions: RollbackVersion
  * abort the request mid-download (#4504), so these calls wait as long as the
  * backend allows (15 minutes server-side).
  */
-const UPDATE_REQUEST_TIMEOUT_MS = 15 * 60 * 1000
+// Must stay above the backend update budget (systemUpdateTimeout, 45 minutes):
+// the server keeps downloading after the client disconnects, but the UI has to
+// stay around long enough to receive the result.
+const UPDATE_REQUEST_TIMEOUT_MS = 46 * 60 * 1000
 
 /**
  * Perform system update

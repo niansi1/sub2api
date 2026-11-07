@@ -249,7 +249,8 @@ const routes: RouteRecordRaw[] = [
       requiresAdmin: false,
       title: 'Redeem Code',
       titleKey: 'redeem.title',
-      descriptionKey: 'redeem.description'
+      descriptionKey: 'redeem.description',
+      requiresRedeem: true
     }
   },
   {
@@ -261,7 +262,8 @@ const routes: RouteRecordRaw[] = [
       requiresAdmin: false,
       title: 'Affiliate',
       titleKey: 'affiliate.title',
-      descriptionKey: 'affiliate.description'
+      descriptionKey: 'affiliate.description',
+      requiresAffiliate: true
     }
   },
   {
@@ -273,7 +275,31 @@ const routes: RouteRecordRaw[] = [
       requiresAdmin: false,
       title: 'Available Channels',
       titleKey: 'availableChannels.title',
-      descriptionKey: 'availableChannels.description'
+      descriptionKey: 'availableChannels.description',
+      requiresAvailableChannels: true
+    }
+  },
+  {
+    path: '/settings/mcp',
+    name: 'MCP',
+    component: () => import('@/views/user/MCPView.vue'),
+    meta: {
+      requiresAuth: true,
+      requiresAdmin: false,
+      title: 'MCP Connection',
+      titleKey: 'mcp.title',
+      descriptionKey: 'mcp.description'
+    }
+  },
+  {
+    path: '/oauth/mcp/authorize',
+    name: 'MCPOAuthAuthorize',
+    component: () => import('@/views/auth/MCPOAuthAuthorizeView.vue'),
+    meta: {
+      requiresAuth: true,
+      requiresAdmin: false,
+      title: 'Authorize MCP Application',
+      titleKey: 'mcp.consentTitle'
     }
   },
   {
@@ -487,7 +513,8 @@ const routes: RouteRecordRaw[] = [
       requiresAdmin: true,
       title: 'Channel Monitor',
       titleKey: 'admin.channelMonitor.title',
-      descriptionKey: 'admin.channelMonitor.description'
+      descriptionKey: 'admin.channelMonitor.description',
+      requiresChannelMonitor: true
     }
   },
   {
@@ -498,7 +525,8 @@ const routes: RouteRecordRaw[] = [
       requiresAuth: true,
       requiresAdmin: false,
       title: 'Channel Status',
-      titleKey: 'nav.channelStatus'
+      titleKey: 'nav.channelStatus',
+      requiresChannelMonitor: true
     }
   },
   {
@@ -570,7 +598,8 @@ const routes: RouteRecordRaw[] = [
       requiresAdmin: true,
       title: 'Redeem Code Management',
       titleKey: 'admin.redeem.title',
-      descriptionKey: 'admin.redeem.description'
+      descriptionKey: 'admin.redeem.description',
+      requiresRedeem: true
     }
   },
   {
@@ -582,7 +611,8 @@ const routes: RouteRecordRaw[] = [
       requiresAdmin: true,
       title: 'Promo Code Management',
       titleKey: 'admin.promo.title',
-      descriptionKey: 'admin.promo.description'
+      descriptionKey: 'admin.promo.description',
+      requiresPromoCode: true
     }
   },
   {
@@ -908,7 +938,17 @@ router.beforeEach(async (to, _from, next) => {
   // 公共设置可能尚未加载（App.vue 的 onMounted 异步拉取晚于首次导航，且纯静态部署
   // 无 __APP_CONFIG__ 注入）。此时 cachedPublicSettings 为空会把 payment/risk_control
   // 误判为“未启用”而错误拦截，故这里先确保设置加载完成。
-  if ((to.meta.requiresPayment || to.meta.requiresRiskControl || to.meta.requiresSubscription) && !appStore.publicSettingsLoaded) {
+  if (
+    (to.meta.requiresPayment ||
+      to.meta.requiresRiskControl ||
+      to.meta.requiresSubscription ||
+      to.meta.requiresRedeem ||
+      to.meta.requiresPromoCode ||
+      to.meta.requiresAffiliate ||
+      to.meta.requiresAvailableChannels ||
+      to.meta.requiresChannelMonitor) &&
+    !appStore.publicSettingsLoaded
+  ) {
     try {
       await appStore.fetchPublicSettings()
     } catch (error) {
@@ -941,6 +981,58 @@ router.beforeEach(async (to, _from, next) => {
     to.meta.requiresSubscription &&
     appStore.publicSettingsLoaded &&
     appStore.cachedPublicSettings?.subscription_enabled === false
+  ) {
+    next(authStore.isAdmin ? '/admin/dashboard' : '/dashboard')
+    return
+  }
+
+  // 兑换码是 opt-out 开关：只有显式 false 才拦截用户端「兑换」与管理端「兑换码管理」直达，
+  // 与侧栏 flagRedeem 的隐藏口径保持一致。
+  if (
+    to.meta.requiresRedeem &&
+    appStore.publicSettingsLoaded &&
+    appStore.cachedPublicSettings?.redeem_enabled === false
+  ) {
+    next(authStore.isAdmin ? '/admin/dashboard' : '/dashboard')
+    return
+  }
+
+  // 优惠码是 opt-out 开关：只有显式 false 才拦截「优惠码管理」直达。
+  if (
+    to.meta.requiresPromoCode &&
+    appStore.publicSettingsLoaded &&
+    appStore.cachedPublicSettings?.promo_code_enabled === false
+  ) {
+    next(authStore.isAdmin ? '/admin/dashboard' : '/dashboard')
+    return
+  }
+
+  // 邀请返利 / 可用渠道是 opt-in 开关（默认关闭）：只有显式 false 才拦截直达，
+  // 与 payment/riskControl 一致——设置加载失败属未知状态，不在此处拦截。
+  if (
+    to.meta.requiresAffiliate &&
+    appStore.publicSettingsLoaded &&
+    appStore.cachedPublicSettings?.affiliate_enabled === false
+  ) {
+    next(authStore.isAdmin ? '/admin/dashboard' : '/dashboard')
+    return
+  }
+
+  if (
+    to.meta.requiresAvailableChannels &&
+    appStore.publicSettingsLoaded &&
+    appStore.cachedPublicSettings?.available_channels_enabled === false
+  ) {
+    next(authStore.isAdmin ? '/admin/dashboard' : '/dashboard')
+    return
+  }
+
+  // 渠道监控是 opt-out 开关：只有显式 false 才拦截「渠道状态」与「渠道监控」直达，
+  // 与侧栏 flagChannelMonitor 的隐藏口径保持一致。
+  if (
+    to.meta.requiresChannelMonitor &&
+    appStore.publicSettingsLoaded &&
+    appStore.cachedPublicSettings?.channel_monitor_enabled === false
   ) {
     next(authStore.isAdmin ? '/admin/dashboard' : '/dashboard')
     return

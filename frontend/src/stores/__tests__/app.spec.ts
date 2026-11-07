@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { setActivePinia, createPinia } from 'pinia'
 import { useAppStore } from '@/stores/app'
 import { getPublicSettings } from '@/api/auth'
+import { checkUpdates } from '@/api/admin/system'
 import type { PublicSettings } from '@/types'
 
 function createDeferred<T>() {
@@ -476,6 +477,44 @@ describe('useAppStore', () => {
       expect((window as any).__APP_CONFIG__.table_page_size_options).toEqual([20, 100, 1000])
       expect(localStorage.getItem('table-page-size')).toBeNull()
       expect(localStorage.getItem('table-page-size-source')).toBeNull()
+    })
+  })
+
+  describe('版本信息', () => {
+    it('fetchVersion 记录后端上报的构建 commit', async () => {
+      vi.mocked(checkUpdates).mockResolvedValue({
+        current_version: '0.2.19',
+        commit: 'b76789ec5',
+        latest_version: '0.2.22',
+        has_update: true,
+        cached: false,
+        build_type: 'release',
+      })
+
+      const store = useAppStore()
+      const info = await store.fetchVersion(true)
+
+      expect(checkUpdates).toHaveBeenCalledWith(true)
+      expect(store.currentVersion).toBe('0.2.19')
+      expect(store.currentCommit).toBe('b76789ec5')
+      expect(info?.commit).toBe('b76789ec5')
+    })
+
+    it('后端未上报 commit 时回退为空字符串且缓存不编造', async () => {
+      vi.mocked(checkUpdates).mockResolvedValue({
+        current_version: '0.2.19',
+        latest_version: '0.2.19',
+        has_update: false,
+        cached: false,
+        build_type: 'source',
+      })
+
+      const store = useAppStore()
+      await store.fetchVersion(true)
+
+      expect(store.currentCommit).toBe('')
+      const cached = await store.fetchVersion(false)
+      expect(cached?.commit).toBeUndefined()
     })
   })
 })
