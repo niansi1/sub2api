@@ -34,6 +34,11 @@ const {
   deleteProvider,
   fetchPublicSettings,
   adminSettingsFetch,
+  listAffiliateUsers,
+  lookupAffiliateUsers,
+  updateAffiliateUserSettings,
+  clearAffiliateUserSettings,
+  batchSetAffiliateRate,
   showError,
   showSuccess,
 } = vi.hoisted(() => ({
@@ -75,6 +80,11 @@ const {
   deleteProvider: vi.fn(),
   fetchPublicSettings: vi.fn(),
   adminSettingsFetch: vi.fn(),
+  listAffiliateUsers: vi.fn().mockResolvedValue({ items: [], total: 0 }),
+  lookupAffiliateUsers: vi.fn().mockResolvedValue([]),
+  updateAffiliateUserSettings: vi.fn().mockResolvedValue({}),
+  clearAffiliateUserSettings: vi.fn().mockResolvedValue({}),
+  batchSetAffiliateRate: vi.fn().mockResolvedValue({}),
   showError: vi.fn(),
   showSuccess: vi.fn(),
 }));
@@ -117,6 +127,16 @@ vi.mock("@/api", () => ({
       createProvider,
       deleteProvider,
     },
+  },
+}));
+
+vi.mock("@/api/admin/affiliates", () => ({
+  affiliatesAPI: {
+    listUsers: listAffiliateUsers,
+    lookupUsers: lookupAffiliateUsers,
+    updateUserSettings: updateAffiliateUserSettings,
+    clearUserSettings: clearAffiliateUserSettings,
+    batchSetRate: batchSetAffiliateRate,
   },
 }));
 
@@ -1197,6 +1217,176 @@ describe("admin SettingsView payment visible method controls", () => {
     expect(payload).not.toHaveProperty("payment_visible_method_wxpay_source");
     expect(payload).not.toHaveProperty("payment_visible_method_alipay_enabled");
     expect(payload).not.toHaveProperty("payment_visible_method_wxpay_enabled");
+  });
+
+  describe("affiliate management saved feature state", () => {
+    const entry = {
+      user_id: 71,
+      email: "saved-affiliate@example.com",
+      username: "saved-affiliate",
+      aff_code: "SAVED71",
+      aff_code_custom: true,
+      aff_rebate_rate_percent: 25,
+      aff_count: 0,
+    };
+
+    function deferred<T>() {
+      let resolve!: (value: T) => void;
+      const promise = new Promise<T>((done) => { resolve = done; });
+      return { promise, resolve };
+    }
+
+    async function mountAffiliateView(enabled = false) {
+      getSettings.mockResolvedValueOnce({ ...baseSettingsResponse, affiliate_enabled: enabled });
+      const wrapper = mountView();
+      await flushPromises();
+      const featuresTab = wrapper.findAll("button")
+        .find((node) => node.text().includes("admin.settings.tabs.features"));
+      expect(featuresTab).toBeDefined();
+      await featuresTab!.trigger("click");
+      await flushPromises();
+      return wrapper;
+    }
+
+    async function openAffiliateAdd(wrapper: ReturnType<typeof mountView>) {
+      const button = wrapper.findAll("button").find((node) =>
+        node.text().includes("admin.settings.features.affiliate.customUsers.addButton"));
+      expect(button).toBeDefined();
+      await button!.trigger("click");
+    }
+
+    beforeEach(() => {
+      listAffiliateUsers.mockReset().mockResolvedValue({ items: [entry], total: 1 });
+      lookupAffiliateUsers.mockReset().mockResolvedValue([]);
+      updateAffiliateUserSettings.mockReset().mockResolvedValue({});
+      clearAffiliateUserSettings.mockReset().mockResolvedValue({});
+      batchSetAffiliateRate.mockReset().mockResolvedValue({});
+    });
+
+    it("does not request guarded APIs when an off feature is only enabled in the draft", async () => {
+      const wrapper = await mountAffiliateView();
+      await wrapper.get('[data-testid="affiliate-enabled-toggle"]').setValue(true);
+      await flushPromises();
+
+      expect(wrapper.get('[data-testid="affiliate-save-first"]').text())
+        .toContain("admin.settings.features.affiliate.customUsers.saveToConfigure");
+      expect(wrapper.find('[data-testid="affiliate-custom-users"]').exists()).toBe(false);
+      expect(listAffiliateUsers).not.toHaveBeenCalled();
+      expect(lookupAffiliateUsers).not.toHaveBeenCalled();
+      expect(updateAffiliateUserSettings).not.toHaveBeenCalled();
+      expect(clearAffiliateUserSettings).not.toHaveBeenCalled();
+      expect(batchSetAffiliateRate).not.toHaveBeenCalled();
+      wrapper.unmount();
+    });
+
+    it("automatically loads the list only after the enable save succeeds", async () => {
+      const saved = deferred<Record<string, unknown>>();
+      updateSettings.mockImplementationOnce(() => saved.promise);
+      const wrapper = await mountAffiliateView();
+      await wrapper.get('[data-testid="affiliate-enabled-toggle"]').setValue(true);
+      await wrapper.find("form").trigger("submit.prevent");
+      await flushPromises();
+      expect(updateSettings).toHaveBeenCalledWith(expect.objectContaining({ affiliate_enabled: true }));
+      expect(listAffiliateUsers).not.toHaveBeenCalled();
+
+      saved.resolve({ ...baseSettingsResponse, affiliate_enabled: true });
+      await flushPromises();
+      expect(listAffiliateUsers).toHaveBeenCalledTimes(1);
+      expect(wrapper.find('[data-testid="affiliate-save-first"]').exists()).toBe(false);
+      expect(wrapper.get('[data-testid="affiliate-custom-users"]').text()).toContain(entry.email);
+      wrapper.unmount();
+    });
+
+    it("keeps guarded APIs unavailable after a failed enable save", async () => {
+      updateSettings.mockRejectedValueOnce(new Error("save failed"));
+      const wrapper = await mountAffiliateView();
+      await wrapper.get('[data-testid="affiliate-enabled-toggle"]').setValue(true);
+      await wrapper.find("form").trigger("submit.prevent");
+      await flushPromises();
+
+      expect(updateSettings).toHaveBeenCalledTimes(1);
+      expect(listAffiliateUsers).not.toHaveBeenCalled();
+      expect(lookupAffiliateUsers).not.toHaveBeenCalled();
+      expect(wrapper.find('[data-testid="affiliate-save-first"]').exists()).toBe(true);
+      expect(wrapper.find('[data-testid="affiliate-custom-users"]').exists()).toBe(false);
+      wrapper.unmount();
+    });
+
+    it("loads existing enabled configuration immediately on initial settings load", async () => {
+      const wrapper = await mountAffiliateView(true);
+      expect(listAffiliateUsers).toHaveBeenCalledTimes(1);
+      expect(listAffiliateUsers).toHaveBeenCalledWith({ page: 1, page_size: 20, search: "" });
+      expect(wrapper.get('[data-testid="affiliate-custom-users"]').text()).toContain(entry.email);
+      wrapper.unmount();
+    });
+
+    it("ignores an old list response after disabling and re-enabling the draft", async () => {
+      const oldList = deferred<{ items: Array<typeof entry>; total: number }>();
+      listAffiliateUsers.mockImplementationOnce(() => oldList.promise);
+      const wrapper = await mountAffiliateView(true);
+      await wrapper.get('[data-testid="affiliate-enabled-toggle"]').setValue(false);
+      expect(wrapper.find('[data-testid="affiliate-custom-users"]').exists()).toBe(false);
+      await wrapper.get('[data-testid="affiliate-enabled-toggle"]').setValue(true);
+      await flushPromises();
+      expect(listAffiliateUsers).toHaveBeenCalledTimes(2);
+      expect(wrapper.get('[data-testid="affiliate-custom-users"]').text()).toContain(entry.email);
+
+      oldList.resolve({ items: [{ ...entry, email: "stale-list@example.com" }], total: 1 });
+      await flushPromises();
+      expect(wrapper.get('[data-testid="affiliate-custom-users"]').text()).toContain(entry.email);
+      expect(wrapper.text()).not.toContain("stale-list@example.com");
+      wrapper.unmount();
+    });
+
+    it("cancels list and lookup debounce timers and clears selection and modals on disable", async () => {
+      const wrapper = await mountAffiliateView(true);
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      try {
+        await wrapper.get('[data-testid="affiliate-custom-users"] tbody input[type="checkbox"]').setValue(true);
+        await wrapper.get('input[placeholder="admin.settings.features.affiliate.customUsers.searchPlaceholder"]').setValue("pending list");
+        await openAffiliateAdd(wrapper);
+        await wrapper.get('input[placeholder="admin.settings.features.affiliate.modal.userPlaceholder"]').setValue("pending lookup");
+        await wrapper.get('[data-testid="affiliate-enabled-toggle"]').setValue(false);
+        await vi.advanceTimersByTimeAsync(301);
+        await flushPromises();
+
+        expect(listAffiliateUsers).toHaveBeenCalledTimes(1);
+        expect(lookupAffiliateUsers).not.toHaveBeenCalled();
+        expect(wrapper.find('input[placeholder="admin.settings.features.affiliate.modal.userPlaceholder"]').exists()).toBe(false);
+        await wrapper.get('[data-testid="affiliate-enabled-toggle"]').setValue(true);
+        await flushPromises();
+        expect(listAffiliateUsers).toHaveBeenLastCalledWith({ page: 1, page_size: 20, search: "" });
+        expect(wrapper.get<HTMLInputElement>('[data-testid="affiliate-custom-users"] tbody input[type="checkbox"]').element.checked).toBe(false);
+      } finally {
+        wrapper.unmount();
+        vi.useRealTimers();
+      }
+    });
+
+    it("does not repopulate a reopened modal from a lookup made before disable", async () => {
+      const oldLookup = deferred<Array<{ id: number; email: string; username: string }>>();
+      lookupAffiliateUsers.mockImplementationOnce(() => oldLookup.promise);
+      const wrapper = await mountAffiliateView(true);
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      try {
+        await openAffiliateAdd(wrapper);
+        await wrapper.get('input[placeholder="admin.settings.features.affiliate.modal.userPlaceholder"]').setValue("old query");
+        await vi.advanceTimersByTimeAsync(301);
+        expect(lookupAffiliateUsers).toHaveBeenCalledTimes(1);
+        await wrapper.get('[data-testid="affiliate-enabled-toggle"]').setValue(false);
+        await wrapper.get('[data-testid="affiliate-enabled-toggle"]').setValue(true);
+        await flushPromises();
+        await openAffiliateAdd(wrapper);
+
+        oldLookup.resolve([{ id: 88, email: "stale-lookup@example.com", username: "stale" }]);
+        await flushPromises();
+        expect(wrapper.text()).not.toContain("stale-lookup@example.com");
+        expect(wrapper.get<HTMLInputElement>('input[placeholder="admin.settings.features.affiliate.modal.userPlaceholder"]').element.value).toBe("");
+      } finally {
+        wrapper.unmount();
+        vi.useRealTimers();
+      }
+    });
   });
 
   it("submits the admin recharge affiliate rebate setting", async () => {

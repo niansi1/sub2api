@@ -106,6 +106,7 @@ export default {
           customUsers: {
             title: 'Per-User Overrides',
             description: 'Set a custom invite code or exclusive rebate rate for specific users. Lists only users that have an override applied.',
+            saveToConfigure: 'Save the enabled affiliate setting before managing per-user overrides.',
             addButton: 'Add Custom User',
             searchPlaceholder: 'Search by email or username',
             batchButton: 'Batch Set Rate ({count} selected)',

@@ -7498,7 +7498,7 @@
                   {{ t('admin.settings.features.affiliate.enabledHint') }}
                 </p>
               </div>
-              <Toggle v-model="form.affiliate_enabled" />
+              <Toggle v-model="form.affiliate_enabled" data-testid="affiliate-enabled-toggle" />
             </div>
 
             <div v-if="form.affiliate_enabled" class="space-y-6">
@@ -7586,7 +7586,15 @@
               </div>
 
               <!-- 专属用户管理 -->
-              <div class="border-t border-gray-100 pt-6 dark:border-dark-700">
+              <p
+                v-if="!affiliateManagementEnabled"
+                role="status"
+                data-testid="affiliate-save-first"
+                class="rounded-lg bg-primary-50 p-3 text-sm text-primary-700 dark:bg-primary-900/20 dark:text-primary-300"
+              >
+                {{ t('admin.settings.features.affiliate.customUsers.saveToConfigure') }}
+              </p>
+              <div v-else class="border-t border-gray-100 pt-6 dark:border-dark-700" data-testid="affiliate-custom-users">
                 <div class="mb-3 flex items-center justify-between">
                   <div>
                     <h3 class="text-sm font-semibold text-gray-900 dark:text-white">
@@ -8953,7 +8961,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, computed, onMounted, watch } from "vue";
+import { ref, reactive, computed, onMounted, onBeforeUnmount, watch } from "vue";
 import { listPlatformIds } from "@/constants/platformCatalog";
 import { useI18n } from "vue-i18n";
 import { adminAPI } from "@/api";
@@ -11199,6 +11207,9 @@ async function loadSettings() {
       openaiFastPolicyLoaded.value = true;
     }
 
+    // The feature guard follows the saved server value, never a draft toggle.
+    persistedAffiliateEnabled.value = settings.affiliate_enabled === true;
+
     // Load web search emulation config separately
     await loadWebSearchConfig();
   } catch (error: unknown) {
@@ -11833,6 +11844,7 @@ async function saveSettings() {
         (form as Record<string, unknown>)[key] = value;
       }
     }
+    persistedAffiliateEnabled.value = updated.affiliate_enabled === true;
     if (updated.openai_oauth_scheduling_rate_multiplier === null) {
       form.openai_oauth_scheduling_rate_multiplier = null;
     }
@@ -12921,6 +12933,20 @@ onMounted(() => {
 // Affiliate (邀请返利) 专属用户管理
 // =========================
 
+const persistedAffiliateEnabled = ref(false);
+const affiliateManagementEnabled = computed(
+  () => persistedAffiliateEnabled.value && form.affiliate_enabled === true,
+);
+let affiliateGeneration = 0;
+let affiliateListRequest = 0;
+let affiliateLookupRequest = 0;
+let affiliateModalRequest = 0;
+let affiliateBatchRequest = 0;
+
+function isCurrentAffiliateGeneration(generation: number): boolean {
+  return affiliateManagementEnabled.value && generation === affiliateGeneration;
+}
+
 interface AffiliateState {
   loading: boolean;
   entries: AffiliateAdminEntry[];
@@ -13014,16 +13040,19 @@ function openAffiliateConfirm(
 }
 
 async function handleAffiliateConfirm() {
+  const generation = affiliateGeneration;
   const fn = affiliateConfirmDialog.pending;
-  affiliateConfirmDialog.show = false;
-  affiliateConfirmDialog.pending = null;
-  if (!fn) return;
+  cancelAffiliateConfirm();
+  if (!affiliateManagementEnabled.value || !fn) return;
   try {
     await fn();
+    if (!isCurrentAffiliateGeneration(generation)) return;
     appStore.showSuccess(t("common.saved"));
     await loadAffiliateUsers();
   } catch (err) {
-    appStore.showError(extractApiErrorMessage(err, t("common.error")));
+    if (isCurrentAffiliateGeneration(generation)) {
+      appStore.showError(extractApiErrorMessage(err, t("common.error")));
+    }
   }
 }
 
@@ -13059,6 +13088,11 @@ function parseRebateRate(raw: unknown): number | null | undefined {
 }
 
 async function loadAffiliateUsers() {
+  if (!affiliateManagementEnabled.value) return;
+  const generation = affiliateGeneration;
+  const request = ++affiliateListRequest;
+  const isCurrent = () =>
+    isCurrentAffiliateGeneration(generation) && request === affiliateListRequest;
   affiliateState.loading = true;
   try {
     const res = await affiliatesAPI.listUsers({
@@ -13066,37 +13100,44 @@ async function loadAffiliateUsers() {
       page_size: affiliateState.pageSize,
       search: affiliateState.search,
     });
+    if (!isCurrent()) return;
     affiliateState.entries = res.items ?? [];
     affiliateState.total = res.total ?? 0;
     // Drop selections that are no longer visible.
     const visibleIds = new Set(affiliateState.entries.map((e) => e.user_id));
     affiliateState.selected = affiliateState.selected.filter((id) => visibleIds.has(id));
   } catch (err) {
-    appStore.showError(extractApiErrorMessage(err, t("common.error")));
+    if (isCurrent()) appStore.showError(extractApiErrorMessage(err, t("common.error")));
   } finally {
-    affiliateState.loading = false;
+    if (isCurrent()) affiliateState.loading = false;
   }
 }
 
 function onAffiliateSearchInput() {
+  if (!affiliateManagementEnabled.value) return;
+  ++affiliateListRequest;
   debounceTimer(affiliateState, 300, () => {
+    if (!affiliateManagementEnabled.value) return;
+    affiliateState.searchTimer = null;
     affiliateState.page = 1;
-    loadAffiliateUsers();
+    void loadAffiliateUsers();
   });
 }
 
 function changeAffiliatePage(page: number) {
-  if (page < 1) return;
+  if (!affiliateManagementEnabled.value || page < 1) return;
   affiliateState.page = page;
-  loadAffiliateUsers();
+  void loadAffiliateUsers();
 }
 
 function toggleAffiliateSelectAll(e: Event) {
+  if (!affiliateManagementEnabled.value) return;
   const checked = (e.target as HTMLInputElement).checked;
   affiliateState.selected = checked ? affiliateState.entries.map((entry) => entry.user_id) : [];
 }
 
 function toggleAffiliateSelect(userId: number) {
+  if (!affiliateManagementEnabled.value) return;
   const idx = affiliateState.selected.indexOf(userId);
   if (idx >= 0) affiliateState.selected.splice(idx, 1);
   else affiliateState.selected.push(userId);
@@ -13105,36 +13146,55 @@ function toggleAffiliateSelect(userId: number) {
 // openAffiliateModal opens the add/edit modal, prefilling fields from the
 // edited entry when present and resetting them otherwise.
 function openAffiliateModal(entry: AffiliateAdminEntry | null) {
+  if (!affiliateManagementEnabled.value) return;
+  closeAffiliateModal();
   affiliateModal.open = true;
   affiliateModal.mode = entry ? "edit" : "add";
-  affiliateModal.userQuery = "";
-  affiliateModal.userResults = [];
-  affiliateModal.selectedUser = null;
   affiliateModal.editingEntry = entry;
   affiliateModal.code = entry?.aff_code_custom ? entry.aff_code : "";
   affiliateModal.rate =
     entry?.aff_rebate_rate_percent != null ? String(entry.aff_rebate_rate_percent) : "";
 }
 
-function closeAffiliateModal() {
-  affiliateModal.open = false;
+function cancelAffiliateLookup() {
+  ++affiliateLookupRequest;
   if (affiliateModal.searchTimer != null) {
     window.clearTimeout(affiliateModal.searchTimer);
     affiliateModal.searchTimer = null;
   }
+  affiliateModal.userResults = [];
+}
+
+function closeAffiliateModal() {
+  ++affiliateModalRequest;
+  cancelAffiliateLookup();
+  affiliateModal.open = false;
+  affiliateModal.saving = false;
+  affiliateModal.userQuery = "";
+  affiliateModal.selectedUser = null;
+  affiliateModal.editingEntry = null;
+  affiliateModal.code = "";
+  affiliateModal.rate = "";
 }
 
 function onAffiliateUserSearchInput() {
+  if (!affiliateManagementEnabled.value || !affiliateModal.open) return;
+  cancelAffiliateLookup();
   const q = affiliateModal.userQuery.trim();
-  if (!q) {
-    affiliateModal.userResults = [];
-    return;
-  }
+  if (!q) return;
+  const generation = affiliateGeneration;
+  const request = affiliateLookupRequest;
+  const isCurrent = () =>
+    isCurrentAffiliateGeneration(generation) &&
+    request === affiliateLookupRequest && affiliateModal.open;
   debounceTimer(affiliateModal, 300, async () => {
+    if (!isCurrent()) return;
+    affiliateModal.searchTimer = null;
     try {
-      affiliateModal.userResults = await affiliatesAPI.lookupUsers(q);
+      const users = await affiliatesAPI.lookupUsers(q);
+      if (isCurrent()) affiliateModal.userResults = users;
     } catch (err) {
-      appStore.showError(extractApiErrorMessage(err, t("common.error")));
+      if (isCurrent()) appStore.showError(extractApiErrorMessage(err, t("common.error")));
     }
   });
 }
@@ -13142,20 +13202,20 @@ function onAffiliateUserSearchInput() {
 // selectAffiliateUser picks a user from the dropdown and collapses the search
 // UI. Clearing the result list also clears the visual dropdown.
 function selectAffiliateUser(user: AffiliateSimpleUser) {
+  if (!affiliateManagementEnabled.value) return;
+  cancelAffiliateLookup();
   affiliateModal.selectedUser = user;
   affiliateModal.userQuery = "";
-  affiliateModal.userResults = [];
 }
 
 function clearSelectedAffiliateUser() {
+  if (!affiliateManagementEnabled.value) return;
   affiliateModal.selectedUser = null;
 }
 
-// affiliateModalCanSubmit guards the Save button: must have a user picked AND
-// produce at least one field change. Without this the admin could "save" an
-// empty payload that silently does nothing — the user reported exactly that
-// confusion.
+// Require a saved feature flag, a selected user, and a meaningful field change.
 const affiliateModalCanSubmit = computed(() => {
+  if (!affiliateManagementEnabled.value) return false;
   if (affiliateModal.mode === "add") {
     if (!affiliateModal.selectedUser) return false;
   } else if (!affiliateModal.editingEntry) {
@@ -13164,8 +13224,6 @@ const affiliateModalCanSubmit = computed(() => {
   const codeFilled = affiliateModal.code.trim() !== "";
   const rateFilled = String(affiliateModal.rate ?? "").trim() !== "";
   if (codeFilled || rateFilled) return true;
-  // Edit mode + empty rate input is a meaningful "clear" only if the user
-  // currently has an exclusive rate to clear.
   return (
     affiliateModal.mode === "edit" &&
     affiliateModal.editingEntry?.aff_rebate_rate_percent != null
@@ -13173,25 +13231,20 @@ const affiliateModalCanSubmit = computed(() => {
 });
 
 async function submitAffiliateModal() {
+  if (!affiliateManagementEnabled.value || affiliateModal.saving) return;
   if (!affiliateModalCanSubmit.value) {
-    // Should be unreachable because the button is disabled, but keep a guard.
     appStore.showError(t("admin.settings.features.affiliate.modal.errorEmpty"));
     return;
   }
 
-  let userId: number;
-  if (affiliateModal.mode === "add") {
-    userId = affiliateModal.selectedUser!.id;
-  } else {
-    userId = affiliateModal.editingEntry!.user_id;
-  }
-
+  const userId = affiliateModal.mode === "add"
+    ? affiliateModal.selectedUser!.id : affiliateModal.editingEntry!.user_id;
   const payload: Parameters<typeof affiliatesAPI.updateUserSettings>[1] = {};
   const codeRaw = affiliateModal.code.trim();
   if (codeRaw) payload.aff_code = codeRaw.toUpperCase();
 
   const rateInput = parseRebateRate(affiliateModal.rate);
-  if (rateInput === undefined) return; // toast already shown
+  if (rateInput === undefined) return;
   if (rateInput === null) {
     if (affiliateModal.mode === "edit" && affiliateModal.editingEntry?.aff_rebate_rate_percent != null) {
       payload.clear_rebate_rate = true;
@@ -13200,24 +13253,27 @@ async function submitAffiliateModal() {
     payload.aff_rebate_rate_percent = rateInput;
   }
 
+  const generation = affiliateGeneration;
+  const request = affiliateModalRequest;
+  const isCurrent = () =>
+    isCurrentAffiliateGeneration(generation) && request === affiliateModalRequest;
   affiliateModal.saving = true;
   try {
     await affiliatesAPI.updateUserSettings(userId, payload);
+    if (!isCurrent()) return;
     appStore.showSuccess(t("common.saved"));
     closeAffiliateModal();
     affiliateState.page = 1;
     await loadAffiliateUsers();
   } catch (err) {
-    appStore.showError(extractApiErrorMessage(err, t("common.error")));
+    if (isCurrent()) appStore.showError(extractApiErrorMessage(err, t("common.error")));
   } finally {
-    affiliateModal.saving = false;
+    if (isCurrent()) affiliateModal.saving = false;
   }
 }
 
-// askResetAffiliateUser prompts via the project ConfirmDialog, then on confirm
-// calls the backend "reset all" endpoint that clears both the exclusive rate
-// AND regenerates the invite code as a system random one.
 function askResetAffiliateUser(entry: AffiliateAdminEntry) {
+  if (!affiliateManagementEnabled.value) return;
   openAffiliateConfirm(
     t("admin.settings.features.affiliate.customUsers.resetTitle"),
     t("admin.settings.features.affiliate.customUsers.resetMessage", {
@@ -13229,12 +13285,15 @@ function askResetAffiliateUser(entry: AffiliateAdminEntry) {
 }
 
 function openAffiliateBatchModal() {
-  if (affiliateState.selected.length === 0) return;
+  if (!affiliateManagementEnabled.value || affiliateState.selected.length === 0) return;
+  ++affiliateBatchRequest;
   affiliateBatchModal.open = true;
+  affiliateBatchModal.saving = false;
   affiliateBatchModal.rate = "";
 }
 
 async function submitAffiliateBatchModal() {
+  if (!affiliateManagementEnabled.value || affiliateBatchModal.saving || affiliateState.selected.length === 0) return;
   const rateInput = parseRebateRate(affiliateBatchModal.rate);
   if (rateInput === undefined) return;
   const userIDs = [...affiliateState.selected];
@@ -13243,32 +13302,51 @@ async function submitAffiliateBatchModal() {
       ? { user_ids: userIDs, clear: true }
       : { user_ids: userIDs, aff_rebate_rate_percent: rateInput };
 
+  const generation = affiliateGeneration;
+  const request = affiliateBatchRequest;
+  const isCurrent = () =>
+    isCurrentAffiliateGeneration(generation) && request === affiliateBatchRequest && affiliateBatchModal.open;
   affiliateBatchModal.saving = true;
   try {
     await affiliatesAPI.batchSetRate(payload);
+    if (!isCurrent()) return;
     appStore.showSuccess(t("common.saved"));
     affiliateBatchModal.open = false;
+    affiliateBatchModal.saving = false;
     affiliateState.selected = [];
     await loadAffiliateUsers();
   } catch (err) {
-    appStore.showError(extractApiErrorMessage(err, t("common.error")));
+    if (isCurrent()) appStore.showError(extractApiErrorMessage(err, t("common.error")));
   } finally {
-    affiliateBatchModal.saving = false;
+    if (isCurrent()) affiliateBatchModal.saving = false;
   }
 }
 
-// Load the per-user table the first time the affiliate switch is observed
-// as enabled. The form starts disabled and is updated to the server's value
-// after the settings load — so this fires either when the saved value is
-// truthy on first paint, or when the admin manually toggles it on.
-watch(
-  () => form.affiliate_enabled,
-  (enabled, prev) => {
-    if (enabled && !prev) {
-      loadAffiliateUsers();
-    }
-  },
-);
+function clearAffiliateManagement() {
+  ++affiliateGeneration;
+  ++affiliateListRequest;
+  if (affiliateState.searchTimer != null) window.clearTimeout(affiliateState.searchTimer);
+  affiliateState.searchTimer = null;
+  affiliateState.loading = false;
+  affiliateState.entries = [];
+  affiliateState.total = 0;
+  affiliateState.page = 1;
+  affiliateState.search = "";
+  affiliateState.selected = [];
+  closeAffiliateModal();
+  affiliateBatchModal.open = false;
+  affiliateBatchModal.saving = false;
+  affiliateBatchModal.rate = "";
+  cancelAffiliateConfirm();
+}
+
+// A saved false -> true transition must load even if the draft is already true.
+// Flush synchronously so an off/on toggle invalidates in-flight requests at once.
+watch(affiliateManagementEnabled, (enabled) => {
+  if (enabled) void loadAffiliateUsers();
+  else clearAffiliateManagement();
+}, { flush: "sync" });
+onBeforeUnmount(clearAffiliateManagement);
 
 // bypass_registration 与身份同步三开关仅在 internal_only 模式下生效。切换 policy 到其它值时，
 // 立即把相关字段重置为 false，避免保存请求里残留旧值。后端 admin handler 与

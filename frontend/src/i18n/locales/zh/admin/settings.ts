@@ -106,6 +106,7 @@ export default {
           customUsers: {
             title: '专属用户配置',
             description: '为指定用户设置专属邀请码或专属返利比例。仅展示已设置过专属配置的用户。',
+            saveToConfigure: '请先保存“启用邀请返利”设置，再管理专属用户配置。',
             addButton: '添加专属用户',
             searchPlaceholder: '搜索邮箱或用户名',
             batchButton: '批量设置比例（已选 {count}）',
