@@ -186,7 +186,7 @@ func (s *GitHubReleaseServiceSuite) TestDownloadFile_SegmentedResumesAfterDrop()
 			httpRange != "bytes=0-0" && start%segmentSize == 0 && seen == 1 {
 			w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", start, end, len(payload)))
 			w.WriteHeader(http.StatusPartialContent)
-			w.(http.Flusher).Flush() // chunked body: clean EOF, not transport UnexpectedEOF
+			flushReviewDownloadResponse(s.T(), w) // chunked body: clean EOF, not transport UnexpectedEOF
 			_, _ = w.Write(payload[start:min64(start+1024, end+1)])
 			return
 		}

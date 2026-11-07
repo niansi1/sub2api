@@ -130,15 +130,16 @@ vi.mock("@/api", () => ({
   },
 }));
 
-vi.mock("@/api/admin/affiliates", () => ({
-  affiliatesAPI: {
+vi.mock("@/api/admin/affiliates", () => {
+  const affiliatesAPI = {
     listUsers: listAffiliateUsers,
     lookupUsers: lookupAffiliateUsers,
     updateUserSettings: updateAffiliateUserSettings,
     clearUserSettings: clearAffiliateUserSettings,
     batchSetRate: batchSetAffiliateRate,
-  },
-}));
+  };
+  return { ...affiliatesAPI, affiliatesAPI, default: affiliatesAPI };
+});
 
 vi.mock("@/stores", () => ({
   useAppStore: () => ({
