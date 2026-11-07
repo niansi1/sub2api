@@ -213,6 +213,11 @@ func (s *UpdateService) applyReleaseAssets(ctx context.Context, releaseAssets []
 		}
 	}
 
+	// A detached download must still carry its live global-operation owner.
+	if err := ensureSystemOperationLockOwned(ctx); err != nil {
+		return err
+	}
+
 	// Get current executable path
 	exePath, err := os.Executable()
 	if err != nil {
@@ -257,36 +262,36 @@ func (s *UpdateService) applyReleaseAssets(ctx context.Context, releaseAssets []
 		return fmt.Errorf("chmod failed: %w", err)
 	}
 
-	// Atomic replacement using rename pattern:
-	// 1. Rename current -> backup (atomic on Unix)
-	// 2. Rename new -> current (atomic on Unix, same filesystem)
-	// If step 2 fails, restore backup
-	backupPath := exePath + ".backup"
+	return replaceUpdateBinary(ctx, exePath, newBinaryPath)
+}
 
-	// Remove old backup if exists
-	_ = os.Remove(backupPath)
-
-	// Step 1: Move current binary to backup
-	if err := os.Rename(exePath, backupPath); err != nil {
-		return fmt.Errorf("backup failed: %w", err)
-	}
-
-	// Step 2: Move new binary to target location (atomic, same filesystem)
-	if err := os.Rename(newBinaryPath, exePath); err != nil {
-		// Restore backup on failure
-		if restoreErr := os.Rename(backupPath, exePath); restoreErr != nil {
-			return fmt.Errorf("replace failed and restore failed: %w (restore error: %v)", err, restoreErr)
+// The entire destructive sequence shares one ownership transaction. A failed
+// installation restores the old binary before that transaction releases its row.
+func replaceUpdateBinary(ctx context.Context, exePath, newBinaryPath string) error {
+	return withSystemOperationLockOwnership(ctx, func(context.Context) error {
+		backupPath := exePath + ".backup"
+		_ = os.Remove(backupPath)
+		if err := os.Rename(exePath, backupPath); err != nil {
+			return fmt.Errorf("backup failed: %w", err)
 		}
-		return fmt.Errorf("replace failed (restored backup): %w", err)
-	}
-
-	// Success - backup file is kept for rollback capability
-	// It will be cleaned up on next successful update
-	return nil
+		if err := os.Rename(newBinaryPath, exePath); err != nil {
+			if restoreErr := os.Rename(backupPath, exePath); restoreErr != nil {
+				return fmt.Errorf("replace failed and restore failed: %w (restore error: %v)", err, restoreErr)
+			}
+			return fmt.Errorf("replace failed (restored backup): %w", err)
+		}
+		return nil
+	})
 }
 
 // Rollback restores the previous version
+// Rollback retains the old API, but an unowned call cannot mutate the binary.
+// HTTP callers use RollbackWithContext with their acquired operation lock.
 func (s *UpdateService) Rollback() error {
+	return s.RollbackWithContext(context.Background())
+}
+
+func (s *UpdateService) RollbackWithContext(ctx context.Context) error {
 	exePath, err := os.Executable()
 	if err != nil {
 		return fmt.Errorf("failed to get executable path: %w", err)
@@ -296,17 +301,20 @@ func (s *UpdateService) Rollback() error {
 		return fmt.Errorf("failed to resolve symlinks: %w", err)
 	}
 
-	backupFile := exePath + ".backup"
-	if _, err := os.Stat(backupFile); os.IsNotExist(err) {
-		return fmt.Errorf("no backup found")
-	}
+	return rollbackUpdateBinary(ctx, exePath)
+}
 
-	// Replace current with backup
-	if err := os.Rename(backupFile, exePath); err != nil {
-		return fmt.Errorf("rollback failed: %w", err)
-	}
-
-	return nil
+func rollbackUpdateBinary(ctx context.Context, exePath string) error {
+	return withSystemOperationLockOwnership(ctx, func(context.Context) error {
+		backupFile := exePath + ".backup"
+		if _, err := os.Stat(backupFile); os.IsNotExist(err) {
+			return fmt.Errorf("no backup found")
+		}
+		if err := os.Rename(backupFile, exePath); err != nil {
+			return fmt.Errorf("rollback failed: %w", err)
+		}
+		return nil
+	})
 }
 
 // ListRollbackVersions returns up to maxRollbackVersions release versions that are

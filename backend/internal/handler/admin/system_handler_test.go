@@ -23,6 +23,7 @@ type systemHandlerUpdateServiceStub struct {
 	checkErr              error
 	checkForces           []bool
 	performCall           int
+	performHook           func(context.Context) error
 	performCtxErr         error
 	performHasDeadline    bool
 	rollbackCall          int
@@ -45,10 +46,13 @@ func (s *systemHandlerUpdateServiceStub) PerformUpdate(ctx context.Context) erro
 	s.performCall++
 	s.performCtxErr = ctx.Err()
 	_, s.performHasDeadline = ctx.Deadline()
+	if s.performHook != nil {
+		return s.performHook(ctx)
+	}
 	return s.performErr
 }
 
-func (s *systemHandlerUpdateServiceStub) Rollback() error {
+func (s *systemHandlerUpdateServiceStub) RollbackWithContext(context.Context) error {
 	s.rollbackCall++
 	return nil
 }
@@ -321,4 +325,37 @@ func TestSystemHandlerGetRollbackVersionsError(t *testing.T) {
 	router.ServeHTTP(rec, req)
 
 	require.Equal(t, http.StatusInternalServerError, rec.Code)
+}
+
+func TestSystemHandlerUpdateCancelsDownloadAfterGlobalLockOwnershipLost(t *testing.T) {
+	repo := newMemoryIdempotencyRepoStub()
+	updateSvc := &systemHandlerUpdateServiceStub{}
+	updateSvc.performHook = func(ctx context.Context) error {
+		repo.mu.Lock()
+		for _, record := range repo.data {
+			record.RequestFingerprint = "a-different-owner"
+		}
+		repo.mu.Unlock()
+		select {
+		case <-ctx.Done():
+			updateSvc.performCtxErr = ctx.Err()
+			return ctx.Err()
+		case <-time.After(3 * time.Second):
+			return errors.New("download was not canceled after ownership loss")
+		}
+	}
+	router := newSystemHandlerTestRouter(t, updateSvc, repo)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/system/update", nil)
+	req.Header.Set("Idempotency-Key", "ownership-lost-download")
+	router.ServeHTTP(rec, req)
+	require.Equal(t, http.StatusInternalServerError, rec.Code)
+	require.Equal(t, 1, updateSvc.performCall)
+	require.ErrorIs(t, updateSvc.performCtxErr, context.Canceled)
+	repo.mu.Lock()
+	defer repo.mu.Unlock()
+	for _, record := range repo.data {
+		require.Equal(t, "a-different-owner", record.RequestFingerprint)
+		require.Equal(t, service.IdempotencyStatusProcessing, record.Status, "the stale release must not clear the new owner")
+	}
 }

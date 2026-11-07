@@ -26,7 +26,7 @@ func TestSystemOperationLockService_AcquireBusyAndRelease(t *testing.T) {
 	require.Error(t, err)
 	require.Equal(t, infraerrors.Code(ErrSystemOperationBusy), infraerrors.Code(err))
 	appErr := infraerrors.FromError(err)
-	require.Equal(t, "op-1", appErr.Metadata["operation_id"])
+	require.Empty(t, appErr.Metadata["operation_id"], "private owner tokens must not be exposed as public operation IDs")
 	require.NotEmpty(t, appErr.Metadata["retry_after"])
 
 	require.NoError(t, svc.Release(context.Background(), lock1, true, ""))
@@ -70,12 +70,12 @@ type flakySystemLockRenewRepo struct {
 	extendCalls int32
 }
 
-func (r *flakySystemLockRenewRepo) ExtendProcessingLock(ctx context.Context, id int64, requestFingerprint string, newLockedUntil, newExpiresAt time.Time) (bool, error) {
+func (r *flakySystemLockRenewRepo) RenewSystemOperationLock(ctx context.Context, id int64, requestFingerprint string, newLockedUntil, newExpiresAt time.Time) (bool, error) {
 	call := atomic.AddInt32(&r.extendCalls, 1)
-	if call == 1 {
+	if call == 2 { // The first call synchronously verifies acquisition; fail the first background renewal.
 		return false, errors.New("transient extend failure")
 	}
-	return r.inMemoryIdempotencyRepo.ExtendProcessingLock(ctx, id, requestFingerprint, newLockedUntil, newExpiresAt)
+	return r.inMemoryIdempotencyRepo.RenewSystemOperationLock(ctx, id, requestFingerprint, newLockedUntil, newExpiresAt)
 }
 
 func TestSystemOperationLockService_RenewLeaseContinuesAfterTransientFailure(t *testing.T) {
@@ -104,7 +104,7 @@ func TestSystemOperationLockService_RenewLeaseContinuesAfterTransientFailure(t *
 		if updated == nil || updated.LockedUntil == nil {
 			return false
 		}
-		return atomic.LoadInt32(&repo.extendCalls) >= 2 && updated.LockedUntil.After(initialLockedUntil)
+		return atomic.LoadInt32(&repo.extendCalls) >= 3 && updated.LockedUntil.After(initialLockedUntil)
 	}, 4*time.Second, 100*time.Millisecond, "renew loop should continue after transient error")
 }
 
@@ -123,7 +123,7 @@ func TestSystemOperationLockService_SameOperationIDRetryWhileRunning(t *testing.
 	require.Error(t, err)
 	require.Equal(t, infraerrors.Code(ErrSystemOperationBusy), infraerrors.Code(err))
 	appErr := infraerrors.FromError(err)
-	require.Equal(t, "op-same", appErr.Metadata["operation_id"])
+	require.Empty(t, appErr.Metadata["operation_id"])
 
 	require.NoError(t, svc.Release(context.Background(), lock1, true, ""))
 
@@ -292,9 +292,9 @@ func TestSystemOperationLockService_ReleaseBranchesAndOperationID(t *testing.T) 
 		SystemOperationTTL: 10 * time.Second,
 		ProcessingTimeout:  2 * time.Second,
 	})
-	lock = &SystemOperationLock{recordID: 1, operationID: "op2", stopCh: make(chan struct{})}
+	lock = &SystemOperationLock{recordID: 1, operationID: "op2", ownerToken: "test-owner-2", service: svc, lostCh: make(chan struct{}), stopCh: make(chan struct{})}
 	require.Error(t, svc.Release(context.Background(), lock, true, ""))
-	lock = &SystemOperationLock{recordID: 1, operationID: "op3", stopCh: make(chan struct{})}
+	lock = &SystemOperationLock{recordID: 1, operationID: "op3", ownerToken: "test-owner-3", service: svc, lostCh: make(chan struct{}), stopCh: make(chan struct{})}
 	require.Error(t, svc.Release(context.Background(), lock, false, "BAD"))
 
 	var nilLockSvc *SystemOperationLockService
@@ -302,4 +302,22 @@ func TestSystemOperationLockService_ReleaseBranchesAndOperationID(t *testing.T) 
 
 	err = svc.busyError("", nil, time.Now())
 	require.Equal(t, infraerrors.Code(ErrSystemOperationBusy), infraerrors.Code(err))
+}
+
+// Error-branch stub capabilities. The faithful shared memory implementation is
+// in system_operation_lock_review_test.go; this stub only injects store errors.
+func (s *systemLockRepoStub) TryReclaimSystemOperationLock(context.Context, int64, string, string, string, time.Time, time.Time) (bool, error) {
+	return s.reclaimOK, s.reclaimErr
+}
+func (s *systemLockRepoStub) RenewSystemOperationLock(context.Context, int64, string, time.Time, time.Time) (bool, error) {
+	return true, nil
+}
+func (s *systemLockRepoStub) ReleaseSystemOperationLock(_ context.Context, _ int64, _ string, succeeded bool, _, _ string, _ time.Time) (bool, error) {
+	if succeeded {
+		return s.markSuccErr == nil, s.markSuccErr
+	}
+	return s.markFailErr == nil, s.markFailErr
+}
+func (s *systemLockRepoStub) WithSystemOperationLockOwnership(ctx context.Context, _ int64, _ string, mutation func(context.Context) error) error {
+	return mutation(ctx)
 }

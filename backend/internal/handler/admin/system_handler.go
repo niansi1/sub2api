@@ -46,7 +46,7 @@ func systemUpdateContext(ctx context.Context) (context.Context, context.CancelFu
 type systemUpdateService interface {
 	CheckUpdate(ctx context.Context, force bool) (*service.UpdateInfo, error)
 	PerformUpdate(ctx context.Context) error
-	Rollback() error
+	RollbackWithContext(ctx context.Context) error
 	ListRollbackVersions(ctx context.Context) ([]service.RollbackVersion, error)
 	RollbackToVersion(ctx context.Context, version string) error
 }
@@ -86,7 +86,9 @@ func (h *SystemHandler) PerformUpdate(c *gin.Context) {
 	operationID := buildSystemOperationID(c, "update")
 	payload := gin.H{"operation_id": operationID}
 	executeAdminIdempotentJSON(c, "admin.system.update", payload, service.DefaultSystemOperationIdempotencyTTL(), func(ctx context.Context) (any, error) {
-		lock, release, err := h.acquireSystemLock(ctx, operationID)
+		updateCtx, cancel := systemUpdateContext(ctx)
+		defer cancel()
+		lock, release, err := h.acquireSystemLock(updateCtx, operationID)
 		if err != nil {
 			return nil, err
 		}
@@ -96,8 +98,8 @@ func (h *SystemHandler) PerformUpdate(c *gin.Context) {
 			release(releaseReason, succeeded)
 		}()
 
-		updateCtx, cancel := systemUpdateContext(ctx)
-		defer cancel()
+		updateCtx, cancelOnLoss := lock.Context(updateCtx)
+		defer cancelOnLoss()
 
 		if err := h.updateSvc.PerformUpdate(updateCtx); err != nil {
 			if errors.Is(err, service.ErrNoUpdateAvailable) {
@@ -165,7 +167,9 @@ func (h *SystemHandler) Rollback(c *gin.Context) {
 	operationID := buildSystemOperationID(c, operation)
 	payload := gin.H{"operation_id": operationID, "version": targetVersion}
 	executeAdminIdempotentJSON(c, "admin.system.rollback", payload, service.DefaultSystemOperationIdempotencyTTL(), func(ctx context.Context) (any, error) {
-		lock, release, err := h.acquireSystemLock(ctx, operationID)
+		rollbackCtx, cancel := systemUpdateContext(ctx)
+		defer cancel()
+		lock, release, err := h.acquireSystemLock(rollbackCtx, operationID)
 		if err != nil {
 			return nil, err
 		}
@@ -175,13 +179,12 @@ func (h *SystemHandler) Rollback(c *gin.Context) {
 			release(releaseReason, succeeded)
 		}()
 
+		rollbackCtx, cancelOnLoss := lock.Context(rollbackCtx)
+		defer cancelOnLoss()
 		if targetVersion != "" {
-			// 指定版本回退同样要下载完整二进制，与更新一样和请求生命周期解耦。
-			rollbackCtx, cancel := systemUpdateContext(ctx)
-			defer cancel()
 			err = h.updateSvc.RollbackToVersion(rollbackCtx, targetVersion)
 		} else {
-			err = h.updateSvc.Rollback()
+			err = h.updateSvc.RollbackWithContext(rollbackCtx)
 		}
 		if err != nil {
 			releaseReason = "SYSTEM_ROLLBACK_FAILED"
