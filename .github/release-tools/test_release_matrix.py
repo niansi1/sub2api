@@ -121,6 +121,22 @@ class ReleaseMatrixTest(unittest.TestCase):
             self.assertEqual(binary.read_bytes(), b'fixture')
             self.assertEqual(binary.stat().st_mode & 0o777, 0o755)
 
+    def test_fork_revision_versions_are_accepted(self):
+        target = {'goos': 'linux', 'goarch': 'amd64'}
+        self.assertEqual(release.archive_name('0.2.21.1', target),
+                         'sub2api_0.2.21.1_linux_amd64.tar.gz')
+        with self.assertRaises(ValueError):
+            release.archive_name('0.2.21.1.beta', target)
+        args = argparse.Namespace(ref='v0.2.21.1', dry_run=False, simple=False)
+        with patch.object(subprocess, 'check_output', return_value='a' * 40 + '\n'), \
+                patch.dict(os.environ, {'GITHUB_OUTPUT': 'outputs-fork',
+                                        'GITHUB_REPOSITORY_OWNER': 'ExampleOwner'}):
+            release.plan(args)
+        output = dict(line.split('=', 1) for line in Path('outputs-fork').read_text().splitlines())
+        self.assertEqual(output['tag'], 'v0.2.21.1')
+        self.assertEqual(output['version'], '0.2.21.1')
+        self.assertEqual(release.VERSION_FILE.read_text(), '0.2.21.1\n')
+
     def test_plan_requires_a_tag_for_publication(self):
         args = argparse.Namespace(ref='main', dry_run=False, simple=False)
         with patch.object(subprocess, 'check_output', return_value='a' * 40 + '\n'):

@@ -17,7 +17,9 @@ import yaml
 FULL_CONFIG = Path('.goreleaser.yaml')
 SIMPLE_CONFIG = Path('.goreleaser.simple.yaml')
 VERSION_FILE = Path('backend/cmd/server/VERSION')
-VERSION_RE = re.compile(r'\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?')
+# Fork builds follow upstream MAJOR.MINOR.PATCH and append their own revision
+# (for example 0.2.21.1), so a fourth numeric component is a valid version.
+VERSION_RE = re.compile(r'\d+\.\d+\.\d+(?:\.\d+)?(?:-[0-9A-Za-z.-]+)?')
 
 
 def config(simple=False):
