@@ -596,21 +596,29 @@ func shouldAutoPauseOpenAIAccountByQuota(ctx context.Context, account *Account) 
 
 // resolveAccountExtraBool reads a bool-like value from account extra, tolerating
 // the few shapes JSON unmarshalling may produce (real bool, "true"/"false"
-// strings, 0/1 numbers).
-func resolveAccountExtraBool(extra map[string]any, key string) bool {
+// strings, 0/1 numbers). The optional fallback is returned when the key is
+// absent or unparsable; omitting it keeps the historical false default.
+func resolveAccountExtraBool(extra map[string]any, key string, fallback ...bool) bool {
+	missing := false
+	if len(fallback) > 0 {
+		missing = fallback[0]
+	}
 	if len(extra) == 0 {
-		return false
+		return missing
 	}
 	value, ok := extra[key]
 	if !ok || value == nil {
-		return false
+		return missing
 	}
 	switch v := value.(type) {
 	case bool:
 		return v
 	case string:
 		parsed, err := strconv.ParseBool(strings.TrimSpace(v))
-		return err == nil && parsed
+		if err != nil {
+			return missing
+		}
+		return parsed
 	case float64:
 		return v != 0
 	case float32:
@@ -624,7 +632,7 @@ func resolveAccountExtraBool(extra map[string]any, key string) bool {
 			return i != 0
 		}
 	}
-	return false
+	return missing
 }
 
 func resolveOpenAIQuotaAutoPauseThresholds(ctx context.Context, account *Account) (float64, float64) {

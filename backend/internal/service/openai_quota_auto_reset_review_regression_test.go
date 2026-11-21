@@ -42,8 +42,13 @@ func TestOpenAIQuotaAutoResetReviewSuccessWithCreditSurvivesLowUsageScan(t *test
 	require.NotEmpty(t, completed.AttemptCreditHash)
 
 	// CachePostResetSnapshot is a no-op in this test double; publish the actual
-	// post-reset low usage before exercising the next ordinary scanner pass.
+	// post-reset low usage and the cached credit snapshot before exercising the
+	// next ordinary scanner pass.
 	repo.setExtraForTest("codex_7d_used_percent", 0.0)
+	repo.setExtraForTest(openaiQuotaResetCreditsKey, &OpenAIRateLimitResetCredits{
+		AvailableCount: 1,
+		Credits:        []OpenAIRateLimitResetCreditDetail{{ExpiresAt: secondExpiry}},
+	})
 	repo.setExtraForTest("codex_usage_updated_at", time.Now().UTC().Format(time.RFC3339))
 	queries := quota.queryCalls.Load()
 	require.NoError(t, svc.evaluateAccount(context.Background(), 501))
@@ -148,6 +153,7 @@ func TestOpenAIQuotaAutoResetReviewPreDispatchCancellationDoesNotPinNewCredit(t 
 					return readErr
 				case "disabled":
 					repo.setExtraForTest(OpenAIAutoResetCreditEnabledExtraKey, false)
+					repo.setExtraForTest(OpenAIAutoResetCreditExpiryEnabledExtraKey, false)
 				case "inactive":
 					repo.mu.Lock()
 					repo.account.Status = "disabled"
@@ -212,6 +218,7 @@ func TestOpenAIQuotaAutoResetReviewFinalCancellationPreservesUncertainAttempt(t 
 			wrapped.beforeGet = func(call int) error {
 				if call == 3 {
 					repo.setExtraForTest(OpenAIAutoResetCreditEnabledExtraKey, false)
+					repo.setExtraForTest(OpenAIAutoResetCreditExpiryEnabledExtraKey, false)
 				}
 				return nil
 			}

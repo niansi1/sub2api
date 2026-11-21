@@ -22,6 +22,10 @@ const (
 
 	openAIAutoResetCreditDefaultThreshold = 1.0
 	openAIAutoResetCreditMinimumThreshold = 0.001
+	// openAIAutoResetExpiryDefaultLeadTime 是到期触发的默认提前量（分钟）。
+	// 到期触发与用量阈值触发相互独立：到期默认开启、默认提前 10 分钟；用量阈值
+	// 仍需管理员显式开启，避免历史账号升级后按阈值产生意外消费。
+	openAIAutoResetExpiryDefaultLeadTime = 10
 )
 
 // OpenAIAutoResetCreditConfig 是账号级自动用卡配置。阈值采用 0-1 比例，
@@ -36,13 +40,13 @@ type OpenAIAutoResetCreditConfig struct {
 	ExpiryMinutes int
 }
 
-// ResolveOpenAIAutoResetCreditConfig 只接受 OpenAI OAuth 母账号；历史账号未配置时
-// 始终保持关闭，防止升级后产生意外消费。
+// ResolveOpenAIAutoResetCreditConfig 只接受 OpenAI OAuth 母账号。用量阈值条件默认关闭，
+// 历史账号不会因升级而自动按阈值用卡；到期条件独立默认开启且默认提前 10 分钟。
 func ResolveOpenAIAutoResetCreditConfig(account *Account) OpenAIAutoResetCreditConfig {
 	config := OpenAIAutoResetCreditConfig{
 		Threshold5h:   openAIAutoResetCreditDefaultThreshold,
 		Threshold7d:   openAIAutoResetCreditDefaultThreshold,
-		ExpiryMinutes: 60,
+		ExpiryMinutes: openAIAutoResetExpiryDefaultLeadTime,
 	}
 	if !isOpenAIAutoResetCreditAccount(account) || account.Extra == nil {
 		return config
@@ -50,7 +54,7 @@ func ResolveOpenAIAutoResetCreditConfig(account *Account) OpenAIAutoResetCreditC
 	config.Enabled = resolveAccountExtraBool(account.Extra, OpenAIAutoResetCreditEnabledExtraKey)
 	config.Disabled5h = resolveAccountExtraBool(account.Extra, OpenAIAutoResetCredit5hDisabledExtraKey)
 	config.Disabled7d = resolveAccountExtraBool(account.Extra, OpenAIAutoResetCredit7dDisabledExtraKey)
-	config.ExpiryEnabled = resolveAccountExtraBool(account.Extra, OpenAIAutoResetCreditExpiryEnabledExtraKey)
+	config.ExpiryEnabled = resolveAccountExtraBool(account.Extra, OpenAIAutoResetCreditExpiryEnabledExtraKey, true)
 	if value, ok := parseOpenAIAutoResetThreshold(account.Extra[OpenAIAutoResetCreditExpiryMinutesExtraKey]); ok && validOpenAIAutoResetExpiryMinutes(value) {
 		config.ExpiryMinutes = int(value)
 	}
@@ -104,7 +108,7 @@ func normalizeOpenAIAutoResetCreditExtra(platform, accountType string, isShadow 
 		}
 		normalized[OpenAIAutoResetCreditExpiryMinutesExtraKey] = int(value)
 	} else if normalized[OpenAIAutoResetCreditExpiryEnabledExtraKey] == true {
-		normalized[OpenAIAutoResetCreditExpiryMinutesExtraKey] = 60
+		normalized[OpenAIAutoResetCreditExpiryMinutesExtraKey] = openAIAutoResetExpiryDefaultLeadTime
 	}
 	if platform != PlatformOpenAI || accountType != AccountTypeOAuth || isShadow {
 		return nil, infraerrors.New(http.StatusBadRequest, "OPENAI_AUTO_RESET_CREDIT_ACCOUNT_INVALID", "automatic reset credits are only supported for OpenAI OAuth parent accounts")

@@ -234,7 +234,8 @@ func (s *OpenAIQuotaAutoResetService) scanEnabledAccounts(ctx context.Context) {
 		}
 		for i := range accounts {
 			account := &accounts[i]
-			if account.Schedulable && ResolveOpenAIAutoResetCreditConfig(account).Enabled {
+			// 到期触发独立于用量阈值触发，任一条件开启都需要扫描。
+			if config := ResolveOpenAIAutoResetCreditConfig(account); account.Schedulable && (config.Enabled || config.ExpiryEnabled) {
 				s.Notify(account.ID)
 			}
 		}
@@ -289,7 +290,7 @@ func (s *OpenAIQuotaAutoResetService) evaluateAccount(ctx context.Context, accou
 		return nil
 	}
 	config := ResolveOpenAIAutoResetCreditConfig(account)
-	if !config.Enabled || !account.IsActive() || !account.Schedulable {
+	if (!config.Enabled && !config.ExpiryEnabled) || !account.IsActive() || !account.Schedulable {
 		return nil
 	}
 
@@ -298,7 +299,10 @@ func (s *OpenAIQuotaAutoResetService) evaluateAccount(ctx context.Context, accou
 	state := openAIAutoResetStateFromExtra(account.Extra)
 	// 达到用卡阈值本应立即查询以便用卡；但 10 分钟内已确认无卡时，重查不会改变结论，
 	// 只会让调度热路径的通知把同一账号的上游额度接口打到十几秒一次。
-	needsQuery := openAIAutoResetSnapshotStale(account.Extra, now) ||
+	// 用量阈值路径沿用「用量快照过期就刷新」的策略；只开到到期触发的账号不再因为
+	// 用量快照过期而每分钟访问一次上游额度接口，仅在已知卡片临近到期或尚无卡片
+	// 快照时才查询。
+	needsQuery := (config.Enabled && openAIAutoResetSnapshotStale(account.Extra, now)) ||
 		(assessment.resetReached && !openAIAutoResetNoCreditConfirmed(state, now)) || assessment.expiryReached
 	if config.ExpiryEnabled && account.Extra[openaiQuotaResetCreditsKey] == nil && !openAIAutoResetNoCreditConfirmed(state, now) {
 		needsQuery = true
@@ -357,7 +361,7 @@ func (s *OpenAIQuotaAutoResetService) evaluateAccount(ctx context.Context, accou
 		return err
 	}
 	config = ResolveOpenAIAutoResetCreditConfig(account)
-	if !config.Enabled || !account.IsActive() || !account.Schedulable {
+	if (!config.Enabled && !config.ExpiryEnabled) || !account.IsActive() || !account.Schedulable {
 		return nil
 	}
 	now = time.Now()
@@ -420,7 +424,7 @@ func (s *OpenAIQuotaAutoResetService) evaluateAccount(ctx context.Context, accou
 	}
 	config = ResolveOpenAIAutoResetCreditConfig(account)
 	assessment = s.assessUsage(usage, account, config, time.Now())
-	if !config.Enabled || !account.IsActive() || !account.Schedulable || (!assessment.resetReached && !assessment.expiryReached) {
+	if (!config.Enabled && !config.ExpiryEnabled) || !account.IsActive() || !account.Schedulable || (!assessment.resetReached && !assessment.expiryReached) {
 		return nil
 	}
 	if assessment.expiryReached && !assessment.resetReached {
@@ -583,8 +587,9 @@ func (s *OpenAIQuotaAutoResetService) buildAssessment(account *Account, config O
 		threshold5h:   config.Threshold5h,
 		threshold7d:   config.Threshold7d,
 	}
-	reset5h := !config.Disabled5h && utilization5h >= config.Threshold5h
-	reset7d := !config.Disabled7d && utilization7d >= config.Threshold7d
+	// 用量阈值触发由总开关管辖；关闭总开关时只保留到期触发。
+	reset5h := config.Enabled && !config.Disabled5h && utilization5h >= config.Threshold5h
+	reset7d := config.Enabled && !config.Disabled7d && utilization7d >= config.Threshold7d
 	assessment.resetReached = reset5h || reset7d
 	assessment.triggerWindow = joinOpenAIAutoResetWindows(reset5h, reset7d)
 

@@ -2923,7 +2923,6 @@
               v-model="autoResetCreditExpiryEnabled"
               type="checkbox"
               class="h-4 w-4 shrink-0 rounded border-gray-300 text-primary-500 focus:ring-primary-500 dark:border-dark-500 disabled:cursor-not-allowed disabled:opacity-50"
-              :disabled="!autoResetCreditEnabled"
               data-testid="auto-reset-credit-expiry-enabled"
             />
             {{ t('admin.accounts.autoResetCredit.enableExpiry') }}
@@ -2931,11 +2930,11 @@
           <div class="grid grid-cols-2 gap-3">
             <div>
               <label for="auto-reset-credit-expiry-value" class="input-label">{{ t('admin.accounts.autoResetCredit.expiryLeadTime') }}</label>
-              <input id="auto-reset-credit-expiry-value" v-model.number="autoResetCreditExpiryValue" type="number" min="1" :max="Math.floor(525600 / autoResetCreditExpiryUnit)" step="1" class="input" :disabled="!autoResetCreditEnabled || !autoResetCreditExpiryEnabled" data-testid="auto-reset-credit-expiry-value" />
+              <input id="auto-reset-credit-expiry-value" v-model.number="autoResetCreditExpiryValue" type="number" min="1" :max="Math.floor(525600 / autoResetCreditExpiryUnit)" step="1" class="input" :disabled="!autoResetCreditExpiryEnabled" data-testid="auto-reset-credit-expiry-value" />
             </div>
             <div>
               <label for="auto-reset-credit-expiry-unit" class="input-label">{{ t('admin.accounts.autoResetCredit.expiryUnit') }}</label>
-              <select id="auto-reset-credit-expiry-unit" v-model.number="autoResetCreditExpiryUnit" class="input" :disabled="!autoResetCreditEnabled || !autoResetCreditExpiryEnabled" data-testid="auto-reset-credit-expiry-unit">
+              <select id="auto-reset-credit-expiry-unit" v-model.number="autoResetCreditExpiryUnit" class="input" :disabled="!autoResetCreditExpiryEnabled" data-testid="auto-reset-credit-expiry-unit">
                 <option :value="1">{{ t('admin.accounts.autoResetCredit.minutes') }}</option>
                 <option :value="60">{{ t('admin.accounts.autoResetCredit.hours') }}</option>
                 <option :value="1440">{{ t('admin.accounts.autoResetCredit.days') }}</option>
@@ -2944,7 +2943,7 @@
           </div>
           <p class="input-hint">{{ t('admin.accounts.autoResetCredit.expiryHint') }}</p>
           <div
-            v-if="autoResetCreditEnabled && autoResetCreditExpiryEnabled"
+            v-if="autoResetCreditExpiryEnabled"
             class="mt-2 space-y-1 rounded-lg bg-gray-50 p-3 text-sm dark:bg-dark-800"
             aria-live="polite"
             data-testid="auto-reset-credit-expiry-preview"
@@ -4189,9 +4188,9 @@ const autoResetCredit5hEnabled = ref(true)
 const autoResetCredit7dEnabled = ref(true)
 const autoResetCredit5hThreshold = ref(100)
 const autoResetCredit7dThreshold = ref(100)
-const autoResetCreditExpiryEnabled = ref(false)
-const autoResetCreditExpiryValue = ref(1)
-const autoResetCreditExpiryUnit = ref(60)
+const autoResetCreditExpiryEnabled = ref(true)
+const autoResetCreditExpiryValue = ref(10)
+const autoResetCreditExpiryUnit = ref(1)
 const autoResetCreditExpiryMinutes = computed(() => autoResetCreditExpiryValue.value * autoResetCreditExpiryUnit.value)
 const validAutoResetThreshold = (value: number) => Number.isFinite(value) && value >= 0.1 && value <= 100
 const validAutoResetExpiry = () => Number.isInteger(autoResetCreditExpiryValue.value) &&
@@ -4201,7 +4200,7 @@ const autoResetCreditPreviewNow = ref(Date.now())
 const { pause: pauseAutoResetPreview, resume: resumeAutoResetPreview } = useIntervalFn(
   () => { autoResetCreditPreviewNow.value = Date.now() }, 60_000, { immediate: false }
 )
-watch(() => props.show && autoResetCreditEnabled.value && autoResetCreditExpiryEnabled.value, (visible) => {
+watch(() => props.show && autoResetCreditExpiryEnabled.value, (visible) => {
   autoResetCreditPreviewNow.value = Date.now()
   if (visible) resumeAutoResetPreview()
   else pauseAutoResetPreview()
@@ -4787,8 +4786,8 @@ const syncFormFromAccount = (newAccount: Account | null) => {
 	autoResetCreditEnabled.value = extra?.auto_reset_credit_enabled === true
 	autoResetCredit5hEnabled.value = extra?.auto_reset_credit_5h_disabled !== true
 	autoResetCredit7dEnabled.value = extra?.auto_reset_credit_7d_disabled !== true
-	autoResetCreditExpiryEnabled.value = extra?.auto_reset_credit_expiry_enabled === true
-	const expiryMinutes = typeof extra?.auto_reset_credit_expiry_minutes === 'number' ? extra.auto_reset_credit_expiry_minutes : 60
+	autoResetCreditExpiryEnabled.value = extra?.auto_reset_credit_expiry_enabled !== false
+	const expiryMinutes = typeof extra?.auto_reset_credit_expiry_minutes === 'number' ? extra.auto_reset_credit_expiry_minutes : 10
 	autoResetCreditExpiryUnit.value = expiryMinutes > 0 && expiryMinutes % 1440 === 0 ? 1440 : expiryMinutes > 0 && expiryMinutes % 60 === 0 ? 60 : 1
 	autoResetCreditExpiryValue.value = expiryMinutes / autoResetCreditExpiryUnit.value
 	autoResetCredit5hThreshold.value =
@@ -5790,16 +5789,15 @@ const handleSubmit = async () => {
     appStore.showError(t('admin.accounts.pleaseSelectStatus'))
     return
   }
-	if (autoResetCreditEnabled.value) {
-		if ((autoResetCredit5hEnabled.value && !validAutoResetThreshold(autoResetCredit5hThreshold.value)) ||
-      (autoResetCredit7dEnabled.value && !validAutoResetThreshold(autoResetCredit7dThreshold.value))) {
-			appStore.showError(t('admin.accounts.autoResetCredit.thresholdInvalid'))
-			return
-		}
-		if (autoResetCreditExpiryEnabled.value && !validAutoResetExpiry()) {
-			appStore.showError(t('admin.accounts.autoResetCredit.expiryInvalid'))
-			return
-		}
+	if (autoResetCreditEnabled.value &&
+    ((autoResetCredit5hEnabled.value && !validAutoResetThreshold(autoResetCredit5hThreshold.value)) ||
+      (autoResetCredit7dEnabled.value && !validAutoResetThreshold(autoResetCredit7dThreshold.value)))) {
+		appStore.showError(t('admin.accounts.autoResetCredit.thresholdInvalid'))
+		return
+	}
+	if (autoResetCreditExpiryEnabled.value && !validAutoResetExpiry()) {
+		appStore.showError(t('admin.accounts.autoResetCredit.expiryInvalid'))
+		return
 	}
 
   const updatePayload: Record<string, unknown> = { ...form }
@@ -6437,7 +6435,7 @@ const handleSubmit = async () => {
 			newExtra.auto_reset_credit_5h_threshold = validAutoResetThreshold(autoResetCredit5hThreshold.value) ? autoResetCredit5hThreshold.value / 100 : 1
 			newExtra.auto_reset_credit_7d_threshold = validAutoResetThreshold(autoResetCredit7dThreshold.value) ? autoResetCredit7dThreshold.value / 100 : 1
 			newExtra.auto_reset_credit_expiry_enabled = autoResetCreditExpiryEnabled.value
-			newExtra.auto_reset_credit_expiry_minutes = validAutoResetExpiry() ? autoResetCreditExpiryMinutes.value : 60
+			newExtra.auto_reset_credit_expiry_minutes = validAutoResetExpiry() ? autoResetCreditExpiryMinutes.value : 10
 		}
 		// 运行态只允许后端服务更新，账号编辑不得回写旧状态。
 		delete newExtra.codex_auto_reset_credit_state

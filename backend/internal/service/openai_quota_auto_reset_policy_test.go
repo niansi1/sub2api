@@ -23,7 +23,7 @@ func TestNormalizeOpenAIAutoResetIndependentPolicies(t *testing.T) {
 	require.True(t, config.Disabled5h)
 	require.True(t, config.Disabled7d)
 	require.True(t, config.ExpiryEnabled)
-	require.Equal(t, 60, config.ExpiryMinutes)
+	require.Equal(t, openAIAutoResetExpiryDefaultLeadTime, config.ExpiryMinutes)
 	for _, minutes := range []float64{1, 60, 1440, 525600} {
 		extra[OpenAIAutoResetCreditExpiryMinutesExtraKey] = minutes
 		_, err := normalizeOpenAIAutoResetCreditExtra(PlatformOpenAI, AccountTypeOAuth, false, extra)

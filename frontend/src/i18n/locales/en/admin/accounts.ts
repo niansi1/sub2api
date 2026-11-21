@@ -1067,7 +1067,7 @@ export default {
 	  },
       autoResetCredit: {
 	    title: 'Automatically use reset credits',
-	    hint: 'Uses the earliest-expiring available credit when any enabled condition is met. Off by default; existing quota-pause rules still apply when no credit is available or reset fails.',
+	    hint: 'Uses the earliest-expiring available credit when any enabled condition is met. The 5h/7d usage triggers require this switch; the expiry trigger below is independent and on by default. When no credit is available or a reset fails, the existing quota-pause rules still apply.',
 	    threshold5h: '5h usage threshold (%)',
 	    threshold7d: '7d usage threshold (%)',
 	    thresholdHint: 'Only enabled windows can trigger a reset. Enter 0.1–100; both default to 100. Disabling a trigger does not disable quota-based pausing.',
@@ -1078,7 +1078,7 @@ export default {
 	    minutes: 'Minutes',
 	    hours: 'Hours',
 	    days: 'Days',
-	    expiryHint: 'Consumes a credit within the expiry lead time, even with zero usage. Checked every minute while the service is running; not an exact-time guarantee. Enter a whole number from 1 minute to 365 days. This trigger is off by default.',
+	    expiryHint: 'Consumes a credit within the expiry lead time, even with zero usage. Independent of the 5h/7d usage triggers: on by default with a 10-minute lead time, and can be switched off per account. Checked every minute while the service is running; not an exact-time guarantee. Enter a whole number from 1 minute to 365 days.',
 	    expiryInvalid: 'Enter a positive whole-number lead time from 1 minute to 365 days.',
 	    expiryPreviewAt: 'Expected expiry trigger:',
 	    expiryPreviewDue: 'The expiry trigger is already due. After saving, the next check will attempt to use a credit.',
